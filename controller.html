@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#07051a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Paddle · Voxel Ping Pong</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root { --p1: #29e7ff; --p2: #ff3d9a; --gold: #ffd166; --bg: #07051a; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: #fff; font-family: Inter, system-ui, sans-serif; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .px { font-family: 'Press Start 2P', monospace; }
+  .hide { display: none !important; }
+  .screen { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px 16px calc(24px + env(safe-area-inset-bottom)); text-align: center; }
+  h1 { font-size: 18px; line-height: 1.5; margin: 0; color: var(--p1); text-shadow: 0 0 14px var(--p1); }
+  p { margin: 0; color: rgba(255,255,255,0.7); line-height: 1.5; max-width: 340px; }
+  button { font: inherit; color: #fff; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 14px; padding: 12px 16px; }
+  .big { font-family: 'Press Start 2P', monospace; font-size: 14px; padding: 18px 26px; background: linear-gradient(90deg, var(--p1), var(--p2)); color: #0b0620; border: none; box-shadow: 0 0 30px rgba(41,231,255,0.4); }
+  input { font: inherit; font-size: 22px; text-transform: uppercase; text-align: center; letter-spacing: 6px; width: 200px; padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.06); color: #fff; }
+  .status { position: fixed; top: calc(10px + env(safe-area-inset-top)); left: 0; right: 0; display: flex; justify-content: space-between; padding: 0 14px; font-size: 12px; color: rgba(255,255,255,0.6); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ff8a8a; margin-right: 6px; vertical-align: middle; }
+  .dot.ok { background: #7dffb5; box-shadow: 0 0 8px #7dffb5; }
+
+  #play { gap: 10px; justify-content: space-between; padding-top: calc(44px + env(safe-area-inset-top)); }
+  #scoreRow { font-size: 22px; display: flex; gap: 16px; align-items: center; }
+  #you { color: var(--p1); text-shadow: 0 0 10px var(--p1); } #them { color: var(--p2); text-shadow: 0 0 10px var(--p2); }
+  #cue { font-size: 12px; min-height: 16px; color: var(--gold); text-shadow: 0 0 10px var(--gold); }
+  #stage { position: relative; flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; }
+  #paddle { width: 170px; height: 250px; transition: filter 0.1s; will-change: transform; }
+  #swingMeter { position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); width: 70%; height: 10px; border-radius: 6px; background: rgba(255,255,255,0.1); overflow: hidden; }
+  #swingFill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--p1), var(--gold), var(--p2)); }
+  .row { display: flex; gap: 8px; width: 100%; max-width: 380px; }
+  .row button { flex: 1; font-size: 13px; }
+  #hitFlash { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(circle, rgba(41,231,255,0.9), rgba(41,231,255,0) 70%); }
+  #touchHint { font-size: 12px; color: rgba(255,255,255,0.5); }
+  /* iOS 18+ gives a haptic tick when a switch input is toggled; used as a vibration fallback. */
+  #hapticSwitch { position: absolute; opacity: 0; pointer-events: none; left: -100px; }
+</style>
+<script src="vendor/peerjs.min.js"></script>
+</head>
+<body>
+<div class="status"><span><span class="dot" id="dot"></span><span id="conn">Connecting…</span></span><span id="lat"></span></div>
+
+<div class="screen hide" id="join">
+  <h1 class="px">ENTER ROOM</h1>
+  <p>Type the room code shown on the big screen.</p>
+  <input id="roomInput" maxlength="5" autocomplete="off">
+  <button class="big" id="joinBtn">JOIN</button>
+</div>
+
+<div class="screen hide" id="setup">
+  <h1 class="px">PLAYER 1<br>PADDLE</h1>
+  <p>Hold your phone upright like a paddle handle, screen facing you. Tilt left and right to move, tilt forward and back to go low and high, and <b>swing</b> to hit.</p>
+  <button class="big" id="motionBtn">ENABLE MOTION</button>
+  <button id="touchBtn">Use touch controls instead</button>
+  <p id="setupErr" style="color:#ff8a8a"></p>
+</div>
+
+<div class="screen hide" id="play">
+  <div id="scoreRow" class="px"><span id="you">0</span><span style="opacity:.4">-</span><span id="them">0</span></div>
+  <div id="cue" class="px"></div>
+  <div id="stage">
+    <svg id="paddle" viewBox="0 0 17 25" shape-rendering="crispEdges">
+      <g id="padPix"></g>
+    </svg>
+    <div id="swingMeter"><div id="swingFill"></div></div>
+  </div>
+  <div id="touchHint" class="hide">Drag to move. Flick up (or tap) to swing.</div>
+  <div class="row">
+    <button id="calBtn">Recenter</button>
+    <button id="startBtn">Start game</button>
+    <button id="modeBtn">Touch mode</button>
+  </div>
+</div>
+
+<div id="hitFlash"></div>
+<label id="hapticLabel"><input type="checkbox" switch id="hapticSwitch"></label>
+<script type="module" src="js/controller.js"></script>
+</body>
+</html>
