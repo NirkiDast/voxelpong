@@ -133,7 +133,15 @@ function upFromEuler(e) {
   return [-Math.cos(b) * Math.sin(g), Math.sin(b), Math.cos(b) * Math.cos(g)];
 }
 
+// Sensor event rates, reported to the PC once a second for the diagnostics panel.
+const rates = { ori: 0, mot: 0, sent: 0 };
+setInterval(() => {
+  link?.send({ t: 'diag', ori: rates.ori, mot: rates.mot, sent: rates.sent, gyro: gyroSeen, mode: state.mode, ua: navigator.userAgent.slice(0, 90) });
+  rates.ori = rates.mot = rates.sent = 0;
+}, 1000);
+
 function onOrientation(e) {
+  rates.ori++;
   if (e.beta == null) return;
   measured = upFromEuler(e);
   for (let k = 0; k < 2; k++) {
@@ -163,6 +171,7 @@ function applyUp(u) {
 
 let swingLock = 0;
 function onMotion(e) {
+  rates.mot++;
   const now = performance.now();
   const dt = lastMotionT ? clamp((now - lastMotionT) / 1000, 0, 0.05) : 0;
   lastMotionT = now;
@@ -208,6 +217,7 @@ function pushInput() {
   if (now - state.lastSend < 8) return;
   if (Math.abs(state.x - state.sentX) < 0.002 && Math.abs(state.y - state.sentY) < 0.002 && now - state.lastSend < 250) return;
   link?.sendFast({ t: 'in', x: +state.x.toFixed(3), y: +state.y.toFixed(3) });
+  rates.sent++;
   state.sentX = state.x; state.sentY = state.y; state.lastSend = now;
 }
 // Heartbeat so the PC keeps the last position even if packets were dropped.

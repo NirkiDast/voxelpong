@@ -65,6 +65,8 @@
 
   #overPanel { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; background: rgba(7,5,26,0.35); }
   #banner { font-size: clamp(32px, 7vw, 80px); text-shadow: 0 0 20px currentColor, 0 0 50px currentColor; animation: bob 2s ease-in-out infinite; }
+  #fps { cursor: pointer; }
+  #diag { position: fixed; top: 52px; right: 12px; max-width: min(760px, calc(100vw - 24px)); margin: 0; padding: 10px 12px; background: rgba(0,0,0,0.75); border: 1px solid var(--line); border-radius: 10px; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; color: #cfe; z-index: 5; }
   #soundHint { position: fixed; bottom: 12px; right: 12px; }
 </style>
 <script type="importmap">
@@ -132,6 +134,7 @@
   </div>
 </div>
 
+<pre id="diag" class="hide"></pre>
 <div class="topbar"><span id="fps" class="pill"></span><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>
 <div id="soundHint" class="pill">Click anywhere to enable sound</div>
 

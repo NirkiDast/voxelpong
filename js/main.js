@@ -204,6 +204,8 @@ const host = new Host({
       const rtt = performance.now() - m.ts;
       pingMs[i] = pingMs[i] ? pingMs[i] * 0.7 + rtt * 0.3 : rtt;
       showPing();
+    } else if (m.t === 'diag') {
+      diag.phone[i] = m;
     } else if (m.t === 'start') {
       if (G.demo || G.mode === 'over') startGame();
     }
@@ -777,15 +779,41 @@ function render(rdt) {
 
 // Automatic quality: if the PC can't hold a smooth frame rate, drop depth of field, then resolution.
 // A slow frame rate adds input lag of its own.
-const perf = { frames: 0, since: performance.now(), level: 0, low: 0 };
+const perf = { frames: 0, since: performance.now(), level: 0, low: 0, worst: 0, last: performance.now() };
+// Diagnostics panel (press D, or click the fps readout): where each millisecond of lag comes from.
+const diag = { on: new URLSearchParams(location.search).has('debug'), phone: [null, null], lastCounts: {} };
+addEventListener('keydown', (e) => { if (e.code === 'KeyD') toggleDiag(); });
+$('fps').addEventListener('click', toggleDiag);
+function toggleDiag() { diag.on = !diag.on; $('diag').classList.toggle('hide', !diag.on); }
+$('diag').classList.toggle('hide', !diag.on);
+function renderDiag(fps) {
+  if (!diag.on) return;
+  const lines = [`PC: ${Math.round(fps)} fps, worst frame ${Math.round(perf.worst)} ms, quality level ${perf.level}, pixel ratio ${renderer.getPixelRatio()}`];
+  [1, 2].forEach((slot) => {
+    const i = slot - 1;
+    if (!players[i].phone) return;
+    const c = host.counts[slot] || { fast: 0, reliable: 0 };
+    const prev = diag.lastCounts[slot] || { fast: 0, reliable: 0 };
+    diag.lastCounts[slot] = { ...c };
+    const ph = diag.phone[i];
+    lines.push(`P${slot}: round trip ${Math.round(pingMs[i])} ms (one way ~${Math.round(pingMs[i] / 2)} ms) · received ${c.fast - prev.fast}/s fast, ${c.reliable - prev.reliable}/s reliable` +
+      (ph ? ` · phone sensors ${ph.ori}/s orientation, ${ph.mot}/s motion, gyro ${ph.gyro ? 'on' : 'off'}, sent ${ph.sent}/s, ${ph.mode}` : ''));
+    if (ph?.ua) lines.push(`    ${ph.ua}`);
+  });
+  $('diag').textContent = lines.join('\n');
+}
 function trackPerf() {
   perf.frames++;
   const now = performance.now();
+  perf.worst = Math.max(perf.worst, now - perf.last);
+  perf.last = now;
   if (now - perf.since < 1000) return;
   const fps = (perf.frames * 1000) / (now - perf.since);
   perf.frames = 0;
   perf.since = now;
   $('fps').textContent = `${Math.round(fps)} fps`;
+  renderDiag(fps);
+  perf.worst = 0;
   if (G.demo || !debug.render || debug.lockQuality) return;
   perf.low = fps < 50 ? perf.low + 1 : 0;
   if (perf.low >= 2 && perf.level < 2) {

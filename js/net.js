@@ -66,6 +66,7 @@ export class Host {
     this.handlers = { onStatus, onJoin, onLeave, onData };
     this.conns = new Map(); // slot -> DataConnection
     this.fast = new Map();  // slot -> RTCDataChannel (lossy)
+    this.counts = {};       // slot -> messages received per channel, for the diagnostics panel
     this.code = storedCode() || makeCode();
     this.retries = 0;
     this.start();
@@ -109,10 +110,11 @@ export class Host {
       const old = this.conns.get(slot);
       if (old && old !== conn) old.close();
       this.conns.set(slot, conn);
-      this.fast.set(slot, openFast(conn, (m) => this.handlers.onData(slot, m)));
+      this.counts[slot] = { fast: 0, reliable: 0 };
+      this.fast.set(slot, openFast(conn, (m) => { this.counts[slot].fast++; this.handlers.onData(slot, m); }));
       this.handlers.onJoin(slot);
     });
-    conn.on('data', (msg) => this.handlers.onData(slot, msg));
+    conn.on('data', (msg) => { if (this.counts[slot]) this.counts[slot].reliable++; this.handlers.onData(slot, msg); });
     const drop = () => {
       if (this.conns.get(slot) === conn) {
         this.conns.delete(slot);
