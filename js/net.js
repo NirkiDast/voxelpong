@@ -22,6 +22,30 @@ export function signalParam() {
   return sig ? `&signal=${encodeURIComponent(sig)}` : '';
 }
 
+// A second, lossy data channel for high-rate input. Lost or late packets are dropped instead of
+// retransmitted, so a hiccup on Wi-Fi never queues up stale paddle positions behind it.
+// Both sides create it with the same id (negotiated), so no extra signaling round trip is needed.
+const FAST_ID = 100;
+function openFast(conn, onMessage) {
+  const pc = conn.peerConnection;
+  if (!pc) return null;
+  try {
+    const ch = pc.createDataChannel('fast', { negotiated: true, id: FAST_ID, ordered: false, maxRetransmits: 0 });
+    ch.onmessage = (e) => {
+      try { onMessage(JSON.parse(e.data)); } catch { /* ignore malformed */ }
+    };
+    return ch;
+  } catch (err) {
+    console.warn('fast channel unavailable', err);
+    return null;
+  }
+}
+
+function sendOn(fast, conn, msg) {
+  if (fast && fast.readyState === 'open') fast.send(JSON.stringify(msg));
+  else if (conn && conn.open) conn.send(msg);
+}
+
 function makeCode() {
   const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let s = '';
@@ -41,6 +65,7 @@ export class Host {
   constructor({ onStatus, onJoin, onLeave, onData }) {
     this.handlers = { onStatus, onJoin, onLeave, onData };
     this.conns = new Map(); // slot -> DataConnection
+    this.fast = new Map();  // slot -> RTCDataChannel (lossy)
     this.code = storedCode() || makeCode();
     this.retries = 0;
     this.start();
@@ -84,12 +109,14 @@ export class Host {
       const old = this.conns.get(slot);
       if (old && old !== conn) old.close();
       this.conns.set(slot, conn);
+      this.fast.set(slot, openFast(conn, (m) => this.handlers.onData(slot, m)));
       this.handlers.onJoin(slot);
     });
     conn.on('data', (msg) => this.handlers.onData(slot, msg));
     const drop = () => {
       if (this.conns.get(slot) === conn) {
         this.conns.delete(slot);
+        this.fast.delete(slot);
         this.handlers.onLeave(slot);
       }
     };
@@ -100,6 +127,10 @@ export class Host {
   send(slot, msg) {
     const c = this.conns.get(slot);
     if (c && c.open) c.send(msg);
+  }
+
+  sendFast(slot, msg) {
+    sendOn(this.fast.get(slot), this.conns.get(slot), msg);
   }
 
   controllerUrl(slot) {
@@ -135,7 +166,10 @@ export class Controller {
       serialization: 'json',
     });
     this.conn = conn;
-    conn.on('open', () => this.onStatus('connected'));
+    conn.on('open', () => {
+      this.fast = openFast(conn, (m) => this.onData(m));
+      this.onStatus('connected');
+    });
     conn.on('data', (m) => this.onData(m));
     conn.on('close', () => { this.onStatus('lost'); this.retry(); });
   }
@@ -151,5 +185,9 @@ export class Controller {
 
   send(msg) {
     if (this.conn && this.conn.open) this.conn.send(msg);
+  }
+
+  sendFast(msg) {
+    sendOn(this.fast, this.conn, msg);
   }
 }

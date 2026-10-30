@@ -178,10 +178,10 @@ export class Motes {
       const it = {
         base: new THREE.Vector3((Math.random() - 0.5) * 10, 0.4 + Math.random() * 3, -5 + Math.random() * 7),
         ph: Math.random() * 10,
-        s: 0.015 + Math.random() * 0.03,
+        s: 0.012 + Math.random() * 0.018,
       };
       this.items.push(it);
-      this.mesh.setColorAt(i, cols[i % 3].clone().multiplyScalar(1.5 + Math.random() * 2));
+      this.mesh.setColorAt(i, cols[i % 3].clone().multiplyScalar(0.8 + Math.random() * 0.6));
     }
     scene.add(this.mesh);
   }

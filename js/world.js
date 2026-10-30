@@ -90,28 +90,33 @@ export function buildRoom(scene) {
   wall((a, b) => lit.add((a + 0.5) * ws, (b + 0.5) * ws, -6, ws, ws, ws * (0.8 + rand() * 0.6), jitter(0x1b1638, 0.05)));
   wall((a, b) => lit.add(-6, (b + 0.5) * ws, (a + 0.5) * ws, ws * (0.8 + rand() * 0.6), ws, ws, jitter(0x1b1638, 0.05)));
   wall((a, b) => lit.add(6, (b + 0.5) * ws, (a + 0.5) * ws, ws * (0.8 + rand() * 0.6), ws, ws, jitter(0x1b1638, 0.05)));
+  // Front wall: only seen by player 2 in split screen.
+  wall((a, b) => lit.add((a + 0.5) * ws, (b + 0.5) * ws, 6, ws, ws, ws * (0.8 + rand() * 0.6), jitter(0x1b1638, 0.05)));
   for (const y of [0.35, 3.1]) {
     const col = y < 1 ? COLORS.p1 : COLORS.p2;
-    glow.add(0, y, -5.62, 12, 0.06, 0.06, col, 3);
-    glow.add(-5.62, y, 0, 0.06, 0.06, 12, col, 3);
-    glow.add(5.62, y, 0, 0.06, 0.06, 12, col, 3);
+    glow.add(0, y, -5.62, 12, 0.05, 0.05, col, 1.8);
+    glow.add(0, y, 5.62, 12, 0.05, 0.05, col, 1.8);
+    glow.add(-5.62, y, 0, 0.05, 0.05, 12, col, 1.8);
+    glow.add(5.62, y, 0, 0.05, 0.05, 12, col, 1.8);
   }
 
   // Pillars with glowing caps.
-  for (const [x, z] of [[-4.2, -4.6], [4.2, -4.6], [-4.8, 0.5], [4.8, 0.5]]) {
+  for (const [x, z] of [[-4.2, -4.6], [4.2, -4.6], [-4.8, 0.5], [4.8, 0.5], [-4.2, 4.6], [4.2, 4.6]]) {
     for (let k = 0; k < 10; k++) lit.add(x, 0.15 + k * 0.3, z, 0.42, 0.3, 0.42, jitter(0x2a2350, 0.06));
-    glow.add(x, 3.05, z, 0.5, 0.08, 0.5, k2col(x), 3.2);
+    glow.add(x, 3.05, z, 0.5, 0.08, 0.5, k2col(x), 2);
   }
 
   // Voxel speakers and a couch-ish block in the back for scale.
   for (const sx of [-1, 1]) {
-    for (let k = 0; k < 5; k++) lit.add(sx * 3.4, 0.2 + k * 0.4, -5.3, 0.6, 0.4, 0.5, jitter(0x15121f, 0.04));
-    glow.add(sx * 3.4, 1.4, -5.04, 0.36, 0.36, 0.02, 0xffb347, 1.8);
-    glow.add(sx * 3.4, 0.6, -5.04, 0.24, 0.24, 0.02, 0xffb347, 1.4);
+    for (const sz of [-1, 1]) {
+      for (let k = 0; k < 5; k++) lit.add(sx * 3.4, 0.2 + k * 0.4, sz * 5.3, 0.6, 0.4, 0.5, jitter(0x15121f, 0.04));
+      glow.add(sx * 3.4, 1.4, sz * 5.04, 0.36, 0.36, 0.02, 0xffb347, 1.6);
+      glow.add(sx * 3.4, 0.6, sz * 5.04, 0.24, 0.24, 0.02, 0xffb347, 1.3);
+    }
   }
 
   // Potted voxel plants.
-  for (const [x, z] of [[-3.6, -2.2], [3.7, -3.0]]) {
+  for (const [x, z] of [[-3.6, -2.2], [3.7, -3.0], [3.5, 3.6], [-3.8, 4.2]]) {
     lit.add(x, 0.2, z, 0.4, 0.4, 0.4, 0x6b3b2a);
     for (let k = 0; k < 26; k++) {
       const a = rand() * Math.PI * 2, r = rand() * 0.35, h = 0.5 + rand() * 0.8;
@@ -138,10 +143,10 @@ export function buildTable(scene) {
   }
   // White lines (slight glow so they catch bloom).
   const ly = T.Y + 0.002, lh = 0.004, lw = 0.02;
-  glow.add(-T.HW + lw / 2, ly, 0, lw, lh, T.L, 0xffffff, 1.1);
-  glow.add(T.HW - lw / 2, ly, 0, lw, lh, T.L, 0xffffff, 1.1);
-  glow.add(0, ly, -T.HL + lw / 2, T.W, lh, lw, 0xffffff, 1.1);
-  glow.add(0, ly, T.HL - lw / 2, T.W, lh, lw, 0xffffff, 1.1);
+  glow.add(-T.HW + lw / 2, ly, 0, lw, lh, T.L, 0xffffff, 1.0);
+  glow.add(T.HW - lw / 2, ly, 0, lw, lh, T.L, 0xffffff, 1.0);
+  glow.add(0, ly, -T.HL + lw / 2, T.W, lh, lw, 0xffffff, 1.0);
+  glow.add(0, ly, T.HL - lw / 2, T.W, lh, lw, 0xffffff, 1.0);
   glow.add(0, ly, 0, 0.006, lh, T.L, 0xffffff, 0.9);
   // Apron + legs.
   for (const sx of [-1, 1]) lit.add(sx * (T.HW - 0.04), T.Y - 0.09, 0, 0.04, 0.08, T.L - 0.1, 0x111522);
@@ -218,9 +223,12 @@ const FONT = {
 };
 
 export class Scoreboard {
-  constructor(scene) {
+  // flip: a board on the front wall, facing player 2, with player 2's score on the left.
+  constructor(scene, flip = false) {
+    this.flip = flip;
     this.group = new THREE.Group();
-    this.group.position.set(0, 1.95, -5.55);
+    this.group.position.set(0, 1.95, flip ? 5.55 : -5.55);
+    if (flip) this.group.rotation.y = Math.PI;
     this.px = 0.12;
     this.slots = []; // 4 digits
     const count = 4 * 15 + 6;
@@ -260,6 +268,8 @@ export class Scoreboard {
   }
 
   set(a, b) {
+    const sides = this.flip ? [1, 0] : [0, 1];
+    if (this.flip) [a, b] = [b, a];
     const digits = [Math.floor(a / 10) % 10, a % 10, Math.floor(b / 10) % 10, b % 10];
     const on = [new THREE.Color(0x29e7ff).multiplyScalar(3.2), new THREE.Color(0xff3d9a).multiplyScalar(3.2)];
     const off = new THREE.Color(0x15122a);
@@ -268,7 +278,7 @@ export class Scoreboard {
       const lead = (i === 0 && a < 10) || (i === 2 && b < 10);
       this.slots[i].forEach((id, k) => {
         const lit = bits[k] === '1' && !lead;
-        this.mesh.setColorAt(id, lit ? on[i < 2 ? 0 : 1] : off);
+        this.mesh.setColorAt(id, lit ? on[sides[i < 2 ? 0 : 1]] : off);
       });
     });
     this.mesh.instanceColor.needsUpdate = true;

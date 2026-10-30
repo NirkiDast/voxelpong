@@ -27,7 +27,7 @@ const AI_LEVELS = {
   medium: { speed: 2.4, err: 0.08, react: 0.2,  power: [0.35, 0.75], reach: 0.17, miss: 0.1,  sloppy: 0.4 },
   hard:   { speed: 3.6, err: 0.035, react: 0.1, power: [0.55, 0.95], reach: 0.2, miss: 0.04, sloppy: 0.2 },
 };
-const settings = { level: 'medium', assist: true };
+const settings = { level: 'medium', assist: true, mode: '1p' };
 
 // ---------- Renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -35,6 +35,8 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Shadows are refreshed once per frame by hand, not once per render pass (DoF and split screen render the scene several times).
+renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 $('app').appendChild(renderer.domElement);
@@ -43,7 +45,6 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x07051a);
 scene.fog = new THREE.FogExp2(0x07051a, 0.075);
 
-const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.05, 40);
 const BASE_FOV = 52;
 
 scene.add(new THREE.HemisphereLight(0x6a5cff, 0x1a0f2a, 0.55));
@@ -64,12 +65,12 @@ scene.add(rimA, rimB);
 
 buildRoom(scene);
 buildTable(scene);
-const board = new Scoreboard(scene);
+const boards = [new Scoreboard(scene), new Scoreboard(scene, true)];
 const particles = new Particles(scene);
 const rings = new Rings(scene);
 const trail = new Trail(scene);
 const shake = new Shake();
-const motes = new Motes(scene);
+const motes = new Motes(scene, 18);
 
 const ballMesh = buildBall();
 scene.add(ballMesh);
@@ -77,21 +78,9 @@ const ballLight = new THREE.PointLight(0xffaa66, 1.6, 1.6, 2);
 scene.add(ballLight);
 
 // ---------- Post-processing: DoF -> bloom -> chroma/vignette -> tonemap ----------
-const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
-const bokeh = new BokehPass(scene, camera, { focus: 3.0, aperture: 0.0035, maxblur: 0.008 });
-// Keep a sharp band around the focus distance and blur the foreground less than the background,
-// so the table and ball stay crisp while the room melts away.
-bokeh.materialBokeh.fragmentShader = bokeh.materialBokeh.fragmentShader.replace(
-  'float factor = ( focus + viewZ );',
-  'float factor = ( focus + viewZ ); factor = sign( factor ) * max( abs( factor ) - 0.9, 0.0 ); if ( factor > 0.0 ) factor *= 0.3;'
-);
-bokeh.materialBokeh.needsUpdate = true;
-composer.addPass(bokeh);
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.8, 0.45, 1.0);
-composer.addPass(bloom);
-const lensFx = new ShaderPass({
-  uniforms: { tDiffuse: { value: null }, amount: { value: 0 }, vignette: { value: 0.55 }, time: { value: 0 } },
+// Each player gets a camera + composer so two-player mode can render split screen.
+const LENS_SHADER = {
+  uniforms: { tDiffuse: { value: null }, amount: { value: 0 }, vignette: { value: 0.5 }, time: { value: 0 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: `
     uniform sampler2D tDiffuse; uniform float amount; uniform float vignette; uniform float time; varying vec2 vUv;
@@ -101,12 +90,32 @@ const lensFx = new ShaderPass({
       vec3 c = vec3(texture2D(tDiffuse, vUv + off).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - off).b);
       c *= 1.0 - vignette * smoothstep(0.12, 0.9, r * 2.2);
       float n = fract(sin(dot(vUv * 913.7 + time, vec2(12.9898, 78.233))) * 43758.5453);
-      c += (n - 0.5) * 0.012;
+      c += (n - 0.5) * 0.01;
       gl_FragColor = vec4(c, 1.0);
     }`,
-});
-composer.addPass(lensFx);
-composer.addPass(new OutputPass());
+};
+
+function makeView() {
+  const camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 40);
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bokeh = new BokehPass(scene, camera, { focus: 3.0, aperture: 0.0035, maxblur: 0.008 });
+  // Keep a sharp band around the focus distance and blur the foreground less than the background,
+  // so the table and ball stay crisp while the room melts away.
+  bokeh.materialBokeh.fragmentShader = bokeh.materialBokeh.fragmentShader.replace(
+    'float factor = ( focus + viewZ );',
+    'float factor = ( focus + viewZ ); factor = sign( factor ) * max( abs( factor ) - 0.9, 0.0 ); if ( factor > 0.0 ) factor *= 0.3;'
+  );
+  bokeh.materialBokeh.needsUpdate = true;
+  composer.addPass(bokeh);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.45, 0.35, 1.15);
+  composer.addPass(bloom);
+  const lens = new ShaderPass(LENS_SHADER);
+  composer.addPass(lens);
+  composer.addPass(new OutputPass());
+  return { camera, composer, bokeh, bloom, lens, pos: new THREE.Vector3(), look: new THREE.Vector3(), focus: 3 };
+}
+const views = [makeView(), makeView()];
 
 // ---------- Players & ball ----------
 const players = [0, 1].map((i) => {
@@ -132,19 +141,22 @@ const ball = {
 };
 
 const G = {
-  mode: 'lobby', demo: true, score: [0, 0], server: 0, rally: 0, timer: 0,
+  mode: 'lobby', demo: true, split: false, score: [0, 0], server: 0, rally: 0, timer: 0,
   hitStop: 0, timeScale: 1, fovPunch: 0, chroma: 0, time: 0, heat: 0,
 };
 
 // ---------- Networking ----------
 let audioReady = false;
+const pingMs = [0, 0];
+const lastSwingId = [-1, -1];
 const host = new Host({
   onStatus(state, info) {
     const el = $('netStatus');
     if (state === 'ready') {
       el.textContent = `Room ${info}`;
       el.className = 'pill ok';
-      renderQR();
+      renderQR(1);
+      renderQR(2);
     } else if (state === 'error') {
       el.textContent = info;
       el.className = 'pill bad';
@@ -154,69 +166,90 @@ const host = new Host({
     }
   },
   onJoin(slot) {
-    if (slot !== 1) return;
-    players[0].phone = true;
-    $('p1State').textContent = 'Phone connected';
-    $('p1Card').classList.add('joined');
+    const i = slot - 1;
+    if (!players[i]) return;
+    players[i].phone = true;
+    $(`p${slot}State`).textContent = 'Phone connected';
+    $(`p${slot}Card`).classList.add('joined');
     sfx.join();
-    popupScreen('PHONE CONNECTED', COLORS.p1);
+    popupScreen(`P${slot} CONNECTED`, players[i].color.getHex());
+    if (slot === 2 && G.demo) selectMode('2p');
     sendState();
   },
   onLeave(slot) {
-    if (slot !== 1) return;
-    players[0].phone = false;
-    $('p1State').textContent = 'Waiting for phone…';
-    $('p1Card').classList.remove('joined');
-    pingMs = 0;
-    $('ping').textContent = 'No phone';
-    $('ping').className = 'pill';
+    const i = slot - 1;
+    if (!players[i]) return;
+    players[i].phone = false;
+    $(`p${slot}State`).textContent = 'Waiting for phone…';
+    $(`p${slot}Card`).classList.remove('joined');
+    pingMs[i] = 0;
+    showPing();
   },
   onData(slot, m) {
-    if (slot !== 1 || !m) return;
-    const p = players[0];
+    const i = slot - 1;
+    const p = players[i];
+    if (!p || !m) return;
     if (m.t === 'in') {
       p.input.x = clamp(+m.x || 0, -1.5, 1.5);
       p.input.y = clamp(+m.y || 0, -1.5, 1.5);
-      lastPhoneInput = performance.now();
+      if (i === 0) lastPhoneInput = performance.now();
     } else if (m.t === 'sw') {
-      humanSwing(0, clamp(+m.p || 0.5, 0, 1), clamp(+m.d || 0, -1, 1));
+      // Swings arrive on both the fast and the reliable channel; act on the first copy only.
+      if (m.id != null) {
+        if (m.id === lastSwingId[i]) return;
+        lastSwingId[i] = m.id;
+      }
+      humanSwing(i, clamp(+m.p || 0.5, 0, 1), clamp(+m.d || 0, -1, 1));
     } else if (m.t === 'pong') {
       const rtt = performance.now() - m.ts;
-      pingMs = pingMs ? pingMs * 0.7 + rtt * 0.3 : rtt;
-      $('ping').textContent = `Phone link ${Math.round(pingMs)} ms`;
-      $('ping').className = `pill ${pingMs < 40 ? 'ok' : pingMs < 90 ? '' : 'bad'}`;
+      pingMs[i] = pingMs[i] ? pingMs[i] * 0.7 + rtt * 0.3 : rtt;
+      showPing();
     } else if (m.t === 'start') {
       if (G.demo || G.mode === 'over') startGame();
     }
   },
 });
 let lastPhoneInput = 0;
-let pingMs = 0;
-// Round-trip time to the phone, shown in the HUD so lag is visible.
-setInterval(() => { if (players[0].phone) host.send(1, { t: 'ping', ts: performance.now() }); }, 1000);
+// Round-trip time to each phone, shown in the corner so lag is visible.
+setInterval(() => {
+  players.forEach((p, i) => { if (p.phone) host.sendFast(i + 1, { t: 'ping', ts: performance.now() }); });
+}, 1000);
+function showPing() {
+  const parts = players.map((p, i) => (p.phone && pingMs[i] ? `P${i + 1} ${Math.round(pingMs[i])} ms` : null)).filter(Boolean);
+  const worst = Math.max(...pingMs);
+  $('ping').textContent = parts.length ? parts.join(' · ') : 'No phone';
+  $('ping').className = `pill ${!parts.length ? '' : worst < 40 ? 'ok' : worst < 90 ? '' : 'bad'}`;
+}
 
-function renderQR() {
-  const url = host.controllerUrl(1);
+function renderQR(slot) {
+  const url = host.controllerUrl(slot);
   const qr = window.qrcode(0, 'M');
   qr.addData(url);
   qr.make();
-  $('qr1').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
-  $('url1').textContent = url;
-  $('url1').href = url;
+  $(`qr${slot}`).innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  $(`url${slot}`).textContent = url;
+  $(`url${slot}`).href = url;
 }
 
+// Each phone gets the score from its own point of view.
 function sendState(extra = {}) {
-  host.send(1, {
-    t: 'st', mode: G.mode, demo: G.demo,
-    you: G.score[0], them: G.score[1],
-    serve: G.mode === 'serve' && G.server === 0,
-    ...extra,
+  [1, 2].forEach((slot) => {
+    const i = slot - 1;
+    const msg = {
+      t: 'st', mode: G.mode, demo: G.demo,
+      you: G.score[i], them: G.score[1 - i],
+      serve: G.mode === 'serve' && G.server === i,
+    };
+    if (extra.winner != null) msg.point = extra.winner === i ? 'won' : 'lost';
+    host.send(slot, msg);
   });
 }
 
 function haptic(p, kind, power = 0.5) {
-  if (p === 0) host.send(1, { t: 'hap', k: kind, p: power });
+  if (players[p].kind === 'human') host.send(p + 1, { t: 'hap', k: kind, p: power });
 }
+
+const names = () => (G.split ? ['P1', 'P2'] : ['YOU', 'AI']);
 
 // ---------- Mouse / keyboard fallback ----------
 let mouseVX = 0, lastMX = 0;
@@ -318,7 +351,7 @@ function performHit(p, { power, dir = 0, quality = 1, auto = false, targetX = nu
   pl.squash = 1;
   if (pl.kind === 'ai') pl.swingAnim = 0;
   hitFx(p, power, smash);
-  if (G.rally > 0 && G.rally % 5 === 0) popup3D(`RALLY x${G.rally}`, ball.pos, 0xffd166, 'big');
+  if (G.rally > 0 && G.rally % 5 === 0) popup3D(`RALLY x${G.rally}`, ball.pos, 0xffd166, 'big', p);
 }
 
 function hitFx(p, power, smash) {
@@ -335,7 +368,7 @@ function hitFx(p, power, smash) {
   haptic(p, smash ? 'smash' : 'hit', power);
   if (smash) {
     G.timeScale = 0.3;
-    popup3D('SMASH!', ball.pos, pl.color.getHex(), 'big');
+    popup3D('SMASH!', ball.pos, pl.color.getHex(), 'big', p);
     flash(0.35);
   }
 }
@@ -357,7 +390,7 @@ function onNet() {
   sfx.net();
   shake.add(0.12);
   particles.burst(ball.pos, new THREE.Color(3, 3, 3), { count: 10, speed: 1.2, size: 0.012, life: 0.4 });
-  if (ball.inPlay) popup3D('NET', ball.pos, 0xffffff);
+  if (ball.inPlay) popup3D('NET', ball.pos, 0xffffff, '', ball.pos.z > 0 ? 0 : 1);
 }
 
 function onOut() {
@@ -373,19 +406,17 @@ function award(winner, reason) {
   G.score[winner]++;
   G.mode = 'point';
   G.timer = 0;
-  board.set(G.score[0], G.score[1]);
-  board.group.scale.setScalar(1.12);
+  boards.forEach((b) => { b.set(G.score[0], G.score[1]); b.group.scale.setScalar(1.12); });
   const col = players[winner].color.getHex();
   const humanWon = winner === 0;
   popupScreen(reason, col);
   if (!G.demo) {
-    sfx.point(humanWon);
-    haptic(0, humanWon ? 'win' : 'lose');
+    sfx.point(G.split || humanWon);
+    haptic(winner, 'win');
+    haptic(1 - winner, 'lose');
   }
-  const c = players[winner].color.clone().multiplyScalar(3.5);
-  for (let k = 0; k < 3; k++) {
-    particles.burst(new THREE.Vector3(rnd(-1.6, 1.6), 1.95, -5.4), c, { count: 14, speed: 2.5, size: 0.04, life: 1.2, up: 0.6, grav: 0.6 });
-  }
+  const c = players[winner].color.clone().multiplyScalar(3);
+  particles.burst(new THREE.Vector3(rnd(-1, 1), 1.95, -5.4), c, { count: 12, speed: 2.2, size: 0.035, life: 1, up: 0.6, grav: 0.6 });
   shake.add(0.2);
   const [a, b] = G.score;
   if (!G.demo && (a >= WIN_AT || b >= WIN_AT) && Math.abs(a - b) >= 2) {
@@ -393,8 +424,8 @@ function award(winner, reason) {
     G.timer = 0;
     G.timeScale = 0.25;
     setTimeout(() => {
-      $('banner').textContent = humanWon ? 'YOU WIN!' : 'AI WINS';
-      $('banner').style.color = humanWon ? '#29e7ff' : '#ff3d9a';
+      $('banner').textContent = G.split ? `P${winner + 1} WINS!` : humanWon ? 'YOU WIN!' : 'AI WINS';
+      $('banner').style.color = winner === 0 ? '#29e7ff' : '#ff3d9a';
       $('overPanel').classList.remove('hide');
       sfx.win();
       flash(0.5);
@@ -404,9 +435,9 @@ function award(winner, reason) {
     }, 500);
   } else if (G.demo && (a >= WIN_AT || b >= WIN_AT)) {
     G.score = [0, 0];
-    setTimeout(() => board.set(0, 0), 1200);
+    setTimeout(() => boards.forEach((b) => b.set(0, 0)), 1200);
   }
-  sendState({ point: humanWon ? 'won' : 'lost', reason });
+  sendState({ winner });
 }
 
 function nextServe() {
@@ -422,7 +453,7 @@ function nextServe() {
   for (const p of players) { p.ai.plan = null; p.ai.swung = false; p.ai.timer = 0; }
   sendState();
   if (!G.demo) {
-    $('hint').textContent = G.server === 0 ? 'Your serve: swing!' : 'AI serves';
+    $('hint').textContent = G.split ? `P${G.server + 1} serve: swing!` : G.server === 0 ? 'Your serve: swing!' : 'AI serves';
     $('hint').classList.remove('hide');
   }
 }
@@ -497,15 +528,16 @@ function predict(p) {
 // ---------- Player control ----------
 function updateHuman(pl, dt) {
   const ap = settings.assist;
-  let tx = clamp(pl.input.x, -1.3, 1.3) * 0.85;
+  let tx = clamp(pl.input.x, -1.3, 1.3) * 0.85 * pl.zs;
   let ty = T.Y + 0.04 + (clamp(pl.input.y, -1, 1) * 0.5 + 0.5) * 0.4;
   if (ap && G.mode === 'rally' && ball.lastHitter !== pl.i) {
     const near = clamp(1 - Math.abs(ball.pos.z - pl.pos.z) / 2.4, 0, 1);
     ty = lerp(ty, clamp(ball.pos.y, T.Y + 0.03, T.Y + 0.6), 0.8 * near);
-    tx = lerp(tx, ball.pos.x, 0.3 * near);
+    tx = lerp(tx, ball.pos.x, 0.2 * near);
   }
-  pl.pos.x = damp(pl.pos.x, tx, 20, dt);
-  pl.pos.y = damp(pl.pos.y, ty, 16, dt);
+  // Light smoothing only: the phone already sends clean, fused orientation, and every bit of damping is lag.
+  pl.pos.x = damp(pl.pos.x, tx, 45, dt);
+  pl.pos.y = damp(pl.pos.y, ty, 30, dt);
 
   // Swing hit window: a swing stays "armed" briefly so a slightly early swing still connects.
   if (pl.swing && G.time - pl.swing.t < 0.2 && canHit(pl.i)) {
@@ -605,9 +637,11 @@ function flash(a) {
 }
 
 const _v = new THREE.Vector3();
-function popup3D(text, pos, color, cls = '') {
-  _v.copy(pos).project(camera);
-  const x = (_v.x * 0.5 + 0.5) * innerWidth, y = (-_v.y * 0.5 + 0.5) * innerHeight;
+function popup3D(text, pos, color, cls = '', view = 0) {
+  const v = G.split ? views[view] : views[0];
+  _v.copy(pos).project(v.camera);
+  const vw = G.split ? innerWidth / 2 : innerWidth;
+  const x = (G.split ? view * vw : 0) + (_v.x * 0.5 + 0.5) * vw, y = (-_v.y * 0.5 + 0.5) * innerHeight;
   spawnPopup(text, x, y, color, cls);
 }
 function popupScreen(text, color) {
@@ -628,10 +662,14 @@ function spawnPopup(text, x, y, color, cls) {
 function startGame() {
   enableAudio();
   G.demo = false;
+  G.split = settings.mode === '2p';
   players[0].kind = 'human';
-  players[1].kind = 'ai';
+  players[1].kind = G.split ? 'human' : 'ai';
+  $('lblL').textContent = names()[0];
+  $('lblR').textContent = names()[1];
+  layout();
   G.score = [0, 0];
-  board.set(0, 0);
+  boards.forEach((b) => b.set(0, 0));
   G.server = 0;
   G.timeScale = 1;
   $('lobby').classList.add('hide');
@@ -643,9 +681,12 @@ function startGame() {
 
 function toLobby() {
   G.demo = true;
+  G.split = false;
   players[0].kind = 'ai';
+  players[1].kind = 'ai';
+  layout();
   G.score = [0, 0];
-  board.set(0, 0);
+  boards.forEach((b) => b.set(0, 0));
   $('lobby').classList.remove('hide');
   $('hud').classList.add('hide');
   $('overPanel').classList.add('hide');
@@ -662,33 +703,97 @@ document.querySelectorAll('[data-level]').forEach((b) => b.addEventListener('cli
   sfx.blip();
 }));
 $('assist').addEventListener('change', (e) => { settings.assist = e.target.checked; });
+function selectMode(mode) {
+  settings.mode = mode;
+  document.querySelectorAll('[data-mode]').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
+  $('aiOpts').classList.toggle('hide', mode === '2p');
+  $('p2Card').classList.toggle('soon', mode !== '2p');
+}
+document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => { selectMode(b.dataset.mode); sfx.blip(); }));
 
-// ---------- Camera ----------
-const camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
-let focusDist = 3;
-function updateCamera(dt, rdt) {
-  const p = players[0];
-  if (G.demo) {
-    const a = G.time * 0.12;
-    camPos.set(Math.sin(a) * 3.6, 1.9 + Math.sin(G.time * 0.2) * 0.25, Math.cos(a) * 3.6);
-    camLook.set(0, T.Y, 0);
-  } else {
-    camPos.set(p.pos.x * 0.3, 1.62, PZ + 1.2);
-    camLook.set(p.pos.x * 0.1 + ball.pos.x * 0.08, 0.7, -0.75);
-  }
-  const k = G.demo ? 1 - Math.exp(-2 * rdt) : 1 - Math.exp(-6 * rdt);
-  camera.position.lerp(camPos, k);
-  camera.position.add(shake.offset);
-  camera.lookAt(camLook);
-  camera.rotateZ(shake.roll);
+// ---------- Cameras & split screen ----------
+function layout() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  views.forEach((v) => {
+    const vw = G.split ? w / 2 : w;
+    v.camera.aspect = vw / h;
+    v.camera.updateProjectionMatrix();
+    v.composer.setPixelRatio(renderer.getPixelRatio());
+    v.composer.setSize(vw, h);
+  });
+  $('divider').classList.toggle('hide', !G.split);
+}
+
+function updateCameras(rdt) {
   G.fovPunch = damp(G.fovPunch, 0, 8, rdt);
-  camera.fov = BASE_FOV - G.fovPunch;
-  camera.updateProjectionMatrix();
-  // Depth of field follows the ball.
-  const target = (ball.inPlay || G.mode === 'serve') ? camera.position.distanceTo(ball.pos) : camera.position.distanceTo(camLook);
-  focusDist = damp(focusDist, target, 6, rdt);
-  bokeh.uniforms.focus.value = focusDist;
-  camera.position.sub(shake.offset);
+  views.forEach((v, i) => {
+    if (i === 1 && !G.split) return;
+    const p = players[i];
+    const cam = v.camera;
+    if (G.demo) {
+      const a = G.time * 0.12;
+      v.pos.set(Math.sin(a) * 3.6, 1.9 + Math.sin(G.time * 0.2) * 0.25, Math.cos(a) * 3.6);
+      v.look.set(0, T.Y, 0);
+    } else {
+      // Split screen views are narrow, so pull the camera back and up a little.
+      const back = G.split ? 1.45 : 1.2, up = G.split ? 1.78 : 1.62;
+      v.pos.set(p.pos.x * 0.3, up, p.zs * (PZ + back));
+      v.look.set(p.pos.x * 0.1 + ball.pos.x * 0.08, 0.7, -p.zs * 0.75);
+    }
+    const k = G.demo ? 1 - Math.exp(-2 * rdt) : 1 - Math.exp(-6 * rdt);
+    cam.position.lerp(v.pos, k);
+    cam.position.add(shake.offset);
+    cam.lookAt(v.look);
+    cam.rotateZ(shake.roll);
+    cam.fov = (G.split ? 62 : BASE_FOV) - G.fovPunch;
+    cam.updateProjectionMatrix();
+    // Depth of field follows the ball.
+    const target = (ball.inPlay || G.mode === 'serve') ? cam.position.distanceTo(ball.pos) : cam.position.distanceTo(v.look);
+    v.focus = damp(v.focus, target, 6, rdt);
+    v.bokeh.uniforms.focus.value = v.focus;
+    cam.position.sub(shake.offset);
+  });
+}
+
+function render(rdt) {
+  renderer.shadowMap.needsUpdate = true;
+  const w = innerWidth, h = innerHeight;
+  if (!G.split) {
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, w, h);
+    views[0].composer.render(rdt);
+    return;
+  }
+  renderer.setScissorTest(true);
+  views.forEach((v, i) => {
+    renderer.setViewport(i * w / 2, 0, w / 2, h);
+    renderer.setScissor(i * w / 2, 0, w / 2, h);
+    v.composer.render(rdt);
+    renderer.shadowMap.needsUpdate = false;
+  });
+  renderer.setScissorTest(false);
+}
+
+// Automatic quality: if the PC can't hold a smooth frame rate, drop depth of field, then resolution.
+// A slow frame rate adds input lag of its own.
+const perf = { frames: 0, since: performance.now(), level: 0, low: 0 };
+function trackPerf() {
+  perf.frames++;
+  const now = performance.now();
+  if (now - perf.since < 1000) return;
+  const fps = (perf.frames * 1000) / (now - perf.since);
+  perf.frames = 0;
+  perf.since = now;
+  $('fps').textContent = `${Math.round(fps)} fps`;
+  if (G.demo || !debug.render || debug.lockQuality) return;
+  perf.low = fps < 50 ? perf.low + 1 : 0;
+  if (perf.low >= 2 && perf.level < 2) {
+    perf.level++;
+    perf.low = 0;
+    if (perf.level === 1) views.forEach((v) => { v.bokeh.enabled = false; });
+    if (perf.level === 2) { renderer.setPixelRatio(1); layout(); }
+  }
 }
 
 // ---------- Main loop ----------
@@ -728,18 +833,21 @@ function frame() {
   rings.update(rdt);
   shake.update(rdt);
   motes.update(G.time);
-  board.group.scale.setScalar(damp(board.group.scale.x, 1, 6, rdt));
+  for (const b of boards) b.group.scale.setScalar(damp(b.group.scale.x, 1, 6, rdt));
 
   G.chroma = damp(G.chroma, 0, 7, rdt);
-  lensFx.uniforms.amount.value = 0.002 + G.chroma;
-  lensFx.uniforms.time.value = G.time % 100;
-  bloom.strength = 0.75 + clamp(G.rally / 20, 0, 0.45) + ball.flash * 0.3;
+  for (const v of views) {
+    v.lens.uniforms.amount.value = 0.0015 + G.chroma;
+    v.lens.uniforms.time.value = G.time % 100;
+    v.bloom.strength = 0.42 + clamp(G.rally / 30, 0, 0.18) + ball.flash * 0.15;
+  }
   rimA.intensity = 6 + Math.sin(G.time * 2) * 1.5;
   rimB.intensity = 6 + Math.cos(G.time * 2.3) * 1.5;
 
-  updateCamera(dt, rdt);
+  updateCameras(rdt);
   updateHud();
-  if (debug.render) composer.render(rdt);
+  trackPerf();
+  if (debug.render) render(rdt);
   requestAnimationFrame(frame);
 }
 
@@ -751,19 +859,13 @@ function updateHud() {
   if (G.mode !== 'serve') $('hint').classList.add('hide');
 }
 
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth, innerHeight);
-  bloom.resolution.set(innerWidth, innerHeight);
-});
+addEventListener('resize', layout);
 
 // Debug hook for automated tests.
 const stats = [];
 const debug = { render: true };
-window.__vxpp = { G, ball, players, startGame, humanSwing, settings, stats, debug };
+window.__vxpp = { G, ball, players, startGame, humanSwing, settings, stats, debug, selectMode, perf };
 
 toLobby();
-camera.position.set(0, 2, 4);
+views.forEach((v) => v.camera.position.set(0, 2, 4));
 frame();

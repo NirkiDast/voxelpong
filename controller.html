@@ -9,13 +9,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
-  :root { --p1: #29e7ff; --p2: #ff3d9a; --gold: #ffd166; --bg: #07051a; }
+  :root { --p1: #29e7ff; --p2: #ff3d9a; --me: #29e7ff; --gold: #ffd166; --bg: #07051a; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: #fff; font-family: Inter, system-ui, sans-serif; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
   .px { font-family: 'Press Start 2P', monospace; }
   .hide { display: none !important; }
   .screen { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px 16px calc(24px + env(safe-area-inset-bottom)); text-align: center; }
-  h1 { font-size: 18px; line-height: 1.5; margin: 0; color: var(--p1); text-shadow: 0 0 14px var(--p1); }
+  h1 { font-size: 18px; line-height: 1.5; margin: 0; color: var(--me); text-shadow: 0 0 14px var(--me); }
   p { margin: 0; color: rgba(255,255,255,0.7); line-height: 1.5; max-width: 340px; }
   button { font: inherit; color: #fff; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 14px; padding: 12px 16px; }
   .big { font-family: 'Press Start 2P', monospace; font-size: 14px; padding: 18px 26px; background: linear-gradient(90deg, var(--p1), var(--p2)); color: #0b0620; border: none; box-shadow: 0 0 30px rgba(41,231,255,0.4); }
@@ -26,7 +26,7 @@
 
   #play { gap: 10px; justify-content: space-between; padding-top: calc(44px + env(safe-area-inset-top)); }
   #scoreRow { font-size: 22px; display: flex; gap: 16px; align-items: center; }
-  #you { color: var(--p1); text-shadow: 0 0 10px var(--p1); } #them { color: var(--p2); text-shadow: 0 0 10px var(--p2); }
+  #you { color: var(--me); text-shadow: 0 0 10px var(--me); } #them { color: #fff; opacity: 0.7; }
   #cue { font-size: 12px; min-height: 16px; color: var(--gold); text-shadow: 0 0 10px var(--gold); }
   #stage { position: relative; flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; }
   #paddle { width: 170px; height: 250px; transition: filter 0.1s; will-change: transform; }
@@ -34,7 +34,7 @@
   #swingFill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--p1), var(--gold), var(--p2)); }
   .row { display: flex; gap: 8px; width: 100%; max-width: 380px; }
   .row button { flex: 1; font-size: 13px; }
-  #hitFlash { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(circle, rgba(41,231,255,0.9), rgba(41,231,255,0) 70%); }
+  #hitFlash { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(circle, var(--me), transparent 70%); }
   #touchHint { font-size: 12px; color: rgba(255,255,255,0.5); }
   /* iOS 18+ gives a haptic tick when a switch input is toggled; used as a vibration fallback. */
   #hapticSwitch { position: absolute; opacity: 0; pointer-events: none; left: -100px; }
@@ -52,7 +52,7 @@
 </div>
 
 <div class="screen hide" id="setup">
-  <h1 class="px">PLAYER 1<br>PADDLE</h1>
+  <h1 class="px" id="who">PADDLE</h1>
   <p>Hold your phone upright like a paddle handle, screen facing you. Tilt left and right to move, tilt forward and back to go low and high, and <b>swing</b> to hit.</p>
   <button class="big" id="motionBtn">ENABLE MOTION</button>
   <button id="touchBtn">Use touch controls instead</button>

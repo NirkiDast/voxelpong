@@ -28,12 +28,15 @@
   #p1Card { border-color: rgba(41,231,255,0.45); box-shadow: 0 0 30px rgba(41,231,255,0.18); }
   #p1Card.joined { border-color: var(--p1); box-shadow: 0 0 40px rgba(41,231,255,0.5); }
   #p1Card h3 { color: var(--p1); }
-  #qr1 { background: #fff; border-radius: 12px; padding: 6px; width: 190px; height: 190px; margin: 0 auto; display: flex; align-items: center; justify-content: center; color: #333; font-size: 13px; }
-  #qr1 svg { width: 100%; height: 100%; }
-  #url1 { display: block; margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.55); word-break: break-all; text-decoration: none; }
-  #p1State { margin-top: 10px; font-weight: 600; }
-  .card.soon { opacity: 0.55; }
-  .card.soon h3 { color: var(--p2); }
+  #p2Card { border-color: rgba(255,61,154,0.45); box-shadow: 0 0 30px rgba(255,61,154,0.18); }
+  #p2Card.joined { border-color: var(--p2); box-shadow: 0 0 40px rgba(255,61,154,0.5); opacity: 1; }
+  #p2Card h3 { color: var(--p2); }
+  .qr { background: #fff; border-radius: 12px; padding: 6px; width: 170px; height: 170px; margin: 0 auto; display: flex; align-items: center; justify-content: center; color: #333; font-size: 13px; }
+  .qr svg { width: 100%; height: 100%; }
+  .url { display: block; margin-top: 10px; font-size: 10px; color: rgba(255,255,255,0.5); word-break: break-all; text-decoration: none; }
+  .pstate { margin-top: 10px; font-weight: 600; }
+  #divider { position: fixed; top: 0; bottom: 0; left: 50%; width: 4px; transform: translateX(-50%); background: linear-gradient(var(--p1), #fff, var(--p2)); box-shadow: 0 0 12px rgba(255,255,255,0.4); pointer-events: none; }
+  .card.soon { opacity: 0.5; }
   .opts { display: flex; flex-direction: column; gap: 12px; align-items: stretch; text-align: left; font-size: 14px; }
   .chips { display: flex; gap: 6px; }
   .chips button { flex: 1; }
@@ -80,33 +83,42 @@
   <div class="cards">
     <div class="card" id="p1Card">
       <h3 class="px">PLAYER 1</h3>
-      <div id="qr1">Preparing QR…</div>
-      <a id="url1" target="_blank" rel="noopener"></a>
-      <div id="p1State">Waiting for phone…</div>
+      <div id="qr1" class="qr">Preparing QR…</div>
+      <a id="url1" class="url" target="_blank" rel="noopener"></a>
+      <div id="p1State" class="pstate">Waiting for phone…</div>
     </div>
     <div class="card">
-      <h3 class="px" style="color:var(--gold)">VS AI</h3>
+      <h3 class="px" style="color:var(--gold)">GAME</h3>
       <div class="opts">
-        <div>Difficulty</div>
         <div class="chips">
-          <button data-level="easy">Easy</button>
-          <button data-level="medium" class="on">Medium</button>
-          <button data-level="hard">Hard</button>
+          <button data-mode="1p" class="on">1P vs AI</button>
+          <button data-mode="2p">2 Players</button>
+        </div>
+        <div id="aiOpts" class="opts">
+          <div>AI difficulty</div>
+          <div class="chips">
+            <button data-level="easy">Easy</button>
+            <button data-level="medium" class="on">Medium</button>
+            <button data-level="hard">Hard</button>
+          </div>
         </div>
         <label><input type="checkbox" id="assist" checked> Aim assist (auto height + soft blocks)</label>
         <button id="btnStart">START</button>
       </div>
     </div>
-    <div class="card soon">
+    <div class="card soon" id="p2Card">
       <h3 class="px">PLAYER 2</h3>
-      <p class="small">Two-player split screen is coming in phase 2.</p>
+      <div id="qr2" class="qr">Preparing QR…</div>
+      <a id="url2" class="url" target="_blank" rel="noopener"></a>
+      <div id="p2State" class="pstate">Waiting for phone…</div>
     </div>
   </div>
-  <p class="small">Scan the QR with your phone, tap <b>Enable motion</b>, then tilt to move and swing to hit. No phone? Move the mouse to aim and click to swing (right click or Space for a power shot).</p>
+  <p class="small">Scan the QR with your phone, tap <b>Enable motion</b>, then tilt to move and swing to hit. Scan the Player 2 code with a second phone for split-screen versus. No phone? Move the mouse to aim and click to swing (right click or Space for a power shot).</p>
 </div>
 
+<div id="divider" class="hide"></div>
 <div id="hud" class="hide">
-  <div id="score" class="px"><span class="lbl" style="color:var(--p1)">YOU</span><span id="scoreL">0</span><span style="opacity:.5">-</span><span id="scoreR">0</span><span class="lbl" style="color:var(--p2)">AI</span></div>
+  <div id="score" class="px"><span class="lbl" id="lblL" style="color:var(--p1)">YOU</span><span id="scoreL">0</span><span style="opacity:.5">-</span><span id="scoreR">0</span><span class="lbl" id="lblR" style="color:var(--p2)">AI</span></div>
   <div id="rally" class="px"></div>
   <div id="hint" class="px hide"></div>
   <div id="ctrlHelp">Esc: menu</div>
@@ -120,7 +132,7 @@
   </div>
 </div>
 
-<div class="topbar"><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>
+<div class="topbar"><span id="fps" class="pill"></span><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>
 <div id="soundHint" class="pill">Click anywhere to enable sound</div>
 
 <script type="module" src="js/main.js"></script>
