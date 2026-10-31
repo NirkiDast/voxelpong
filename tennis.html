@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voxel Tennis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root { --p1: #29e7ff; --p2: #ff3d9a; --gold: #ffd166; --bg: #07051a; --panel: rgba(14, 10, 40, 0.78); --line: rgba(255,255,255,0.12); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: #fff; font-family: Inter, system-ui, sans-serif; }
+  #app canvas { display: block; }
+  .px { font-family: 'Press Start 2P', monospace; }
+  .hide { display: none !important; }
+  .pill { display: inline-block; padding: 6px 12px; border-radius: 999px; background: rgba(255,255,255,0.08); border: 1px solid var(--line); font-size: 13px; }
+  .pill.ok { color: #7dffb5; border-color: rgba(125,255,181,0.4); }
+  .pill.bad { color: #ff8a8a; border-color: rgba(255,138,138,0.4); }
+
+  #lobby { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 16px; overflow-y: auto; background: radial-gradient(ellipse at center, rgba(7,5,26,0.15), rgba(7,5,26,0.75)); }
+  #title { font-size: clamp(24px, min(5vw, 8vh), 64px); letter-spacing: 2px; text-align: center; line-height: 1.25;
+    background: linear-gradient(90deg, var(--p1), #fff 50%, var(--p2)); -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 18px rgba(41,231,255,0.55)) drop-shadow(0 0 30px rgba(255,61,154,0.35)); animation: bob 3s ease-in-out infinite; }
+  @keyframes bob { 50% { transform: translateY(-6px); } }
+  .cards { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
+  .card { width: 260px; background: var(--panel); border: 2px solid var(--line); border-radius: 18px; padding: 18px; text-align: center; backdrop-filter: blur(8px); }
+  .card h3 { margin: 0 0 12px; font-size: 12px; }
+  #p1Card { border-color: rgba(41,231,255,0.45); box-shadow: 0 0 30px rgba(41,231,255,0.18); }
+  #p1Card.joined { border-color: var(--p1); box-shadow: 0 0 40px rgba(41,231,255,0.5); }
+  #p1Card h3 { color: var(--p1); }
+  #p2Card { border-color: rgba(255,61,154,0.45); box-shadow: 0 0 30px rgba(255,61,154,0.18); }
+  #p2Card.joined { border-color: var(--p2); box-shadow: 0 0 40px rgba(255,61,154,0.5); opacity: 1; }
+  #p2Card h3 { color: var(--p2); }
+  .qr { background: #fff; border-radius: 12px; padding: 6px; width: 170px; height: 170px; margin: 0 auto; display: flex; align-items: center; justify-content: center; color: #333; font-size: 13px; }
+  .qr svg { width: 100%; height: 100%; }
+  .url { display: block; margin-top: 10px; font-size: 10px; color: rgba(255,255,255,0.5); word-break: break-all; text-decoration: none; }
+  .pstate { margin-top: 10px; font-weight: 600; }
+  #divider { position: fixed; top: 0; bottom: 0; left: 50%; width: 4px; transform: translateX(-50%); background: linear-gradient(var(--p1), #fff, var(--p2)); box-shadow: 0 0 12px rgba(255,255,255,0.4); pointer-events: none; }
+  .card.soon { opacity: 0.5; }
+  .opts { display: flex; flex-direction: column; gap: 12px; align-items: stretch; text-align: left; font-size: 14px; }
+  .chips { display: flex; gap: 6px; }
+  .chips button { flex: 1; }
+  button { font: inherit; color: #fff; background: rgba(255,255,255,0.08); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; }
+  button.on { background: var(--p1); color: #04131a; border-color: var(--p1); font-weight: 800; }
+  #btnStart, #btnAgain { font-family: 'Press Start 2P', monospace; font-size: 14px; padding: 16px 28px; background: linear-gradient(90deg, var(--p1), var(--p2)); color: #0b0620; border: none; border-radius: 14px; box-shadow: 0 0 30px rgba(255,61,154,0.45); }
+  #btnStart:hover, #btnAgain:hover { transform: scale(1.04); }
+  .small { font-size: 12px; color: rgba(255,255,255,0.6); text-align: center; max-width: 560px; line-height: 1.5; }
+  .topbar { position: fixed; top: 12px; right: 12px; display: flex; gap: 8px; }
+
+  #hud { position: fixed; inset: 0; pointer-events: none; }
+  #score { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 18px; align-items: center; font-size: 28px; text-shadow: 0 0 14px currentColor; }
+  #scoreL { color: var(--p1); } #scoreR { color: var(--p2); }
+  #score .lbl { font-size: 10px; opacity: 0.8; }
+  #rally { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); color: var(--gold); font-size: 12px; text-shadow: 0 0 12px var(--gold); }
+  #hint { position: absolute; bottom: 9%; left: 50%; transform: translateX(-50%); font-size: 14px; color: #fff; text-shadow: 0 0 12px var(--p1); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.45; } }
+  #ctrlHelp { position: absolute; bottom: 12px; left: 12px; font-size: 12px; color: rgba(255,255,255,0.45); }
+
+  #popups { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+  .popup { position: absolute; transform: translate(-50%, -50%); font-family: 'Press Start 2P', monospace; font-size: 14px; white-space: nowrap; text-shadow: 0 0 10px currentColor, 0 0 24px currentColor; animation: pop 1.2s cubic-bezier(.2,1.6,.4,1) forwards; }
+  .popup.big { font-size: 22px; }
+  .popup.huge { font-size: clamp(28px, 5vw, 56px); }
+  @keyframes pop { 0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0; } 15% { transform: translate(-50%, -50%) scale(1.25); opacity: 1; } 30% { transform: translate(-50%, -50%) scale(1); } 80% { opacity: 1; } 100% { transform: translate(-50%, -120%) scale(1); opacity: 0; } }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; mix-blend-mode: screen; }
+
+  #overPanel { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; background: rgba(7,5,26,0.35); }
+  #banner { font-size: clamp(32px, 7vw, 80px); text-shadow: 0 0 20px currentColor, 0 0 50px currentColor; animation: bob 2s ease-in-out infinite; }
+  #fps { cursor: pointer; }
+  #diag { position: fixed; top: 52px; right: 12px; max-width: min(760px, calc(100vw - 24px)); margin: 0; padding: 10px 12px; background: rgba(0,0,0,0.75); border: 1px solid var(--line); border-radius: 10px; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; color: #cfe; z-index: 5; }
+  #soundHint { position: fixed; bottom: 12px; right: 12px; }
+  #camBox { position: fixed; left: 12px; bottom: 12px; z-index: 6; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; background: #000; line-height: 0; }
+  #camBox video { display: none; }
+  #camCal { position: fixed; left: 50%; top: 22%; transform: translateX(-50%); z-index: 7; width: min(900px, calc(100vw - 32px)); text-align: center; font-size: clamp(14px, 2.2vw, 24px); line-height: 1.6; color: #fff; text-shadow: 0 0 12px var(--p1), 0 0 30px var(--p1); background: rgba(7,5,26,0.88) !important; padding: 18px; border-radius: 14px; pointer-events: none; }
+  #camCal div + div { margin-top: 12px; }
+  button.mini { padding: 3px 8px; font-size: 11px; margin-left: 6px; }
+  #camBox canvas { width: 240px; height: 180px; }
+  #camBox.small canvas { width: 120px; height: 90px; }
+</style>
+<style>
+  #scorebox { position: absolute; top: 14px; left: 14px; background: rgba(7,5,26,0.72); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; font-size: 12px; display: grid; grid-template-columns: 12px auto 30px 40px; gap: 6px 10px; align-items: center; box-shadow: 0 0 24px rgba(41,231,255,0.15); }
+  #scorebox .t0 { color: var(--p1); text-shadow: 0 0 10px var(--p1); }
+  #scorebox .t1 { color: var(--p2); text-shadow: 0 0 10px var(--p2); }
+  #scorebox .g { color: #fff; text-align: center; }
+  #scorebox .pt { color: var(--gold); text-align: right; text-shadow: 0 0 10px var(--gold); }
+  #scorebox .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px var(--gold); }
+  #title { background: linear-gradient(90deg, #d8ff66, #fff 50%, var(--p2)); -webkit-background-clip: text; background-clip: text; }
+  .popup.small { font-size: 10px; }
+  #switchGame { position: fixed; top: 12px; left: 12px; font-size: 12px; color: rgba(255,255,255,0.7); text-decoration: none; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/addons/" } }
+</script>
+<script src="vendor/peerjs.min.js"></script>
+<script src="vendor/qrcode.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<div id="popups"></div>
+
+<div id="lobby">
+  <a id="switchGame" class="pill" href="index.html">← Ping pong</a>
+  <div id="title" class="px">VOXEL<br>TENNIS</div>
+  <div class="cards">
+    <div class="card" id="p1Card">
+      <h3 class="px">PLAYER 1</h3>
+      <div id="qr1" class="qr">Preparing QR…</div>
+      <a id="url1" class="url" target="_blank" rel="noopener"></a>
+      <div id="p1State" class="pstate">Waiting for phone…</div>
+    </div>
+    <div class="card">
+      <h3 class="px">DOUBLES</h3>
+      <div class="opts">
+        <div>CPU level</div>
+        <div class="chips">
+          <button data-level="easy">Easy</button>
+          <button data-level="medium" class="on">Medium</button>
+          <button data-level="hard">Hard</button>
+        </div>
+        <div>Match length</div>
+        <div class="chips">
+          <button data-games="1">1 game</button>
+          <button data-games="3" class="on">3 games</button>
+          <button data-games="6">6 games</button>
+        </div>
+        <button id="btnStart">START</button>
+      </div>
+    </div>
+    <div class="card" id="p2Card">
+      <h3 class="px">PARTNER</h3>
+      <div id="qr2" class="qr">Preparing QR…</div>
+      <a id="url2" class="url" target="_blank" rel="noopener"></a>
+      <div id="p2State" class="pstate">Optional: scan to team up</div>
+    </div>
+  </div>
+  <p class="small">Scan with your phone and tap <b>Enable motion</b>. Your player runs to the ball by itself: you just swing. <b>When</b> you swing aims the shot (early = cross-court, late = down the line), <b>how hard</b> sets the pace, and swinging up or down through the ball adds topspin or slice. To serve, flick the phone up to toss, then swing. No phone? Click to swing (right click lobs).</p>
+</div>
+
+<div id="hud" class="hide">
+  <div id="scorebox" class="px">
+    <span class="dot" id="sServe0"></span><span class="t0" id="sName0">YOU & CPU</span><span class="g" id="sGames0">0</span><span class="pt" id="sPts0">0</span>
+    <span class="dot" id="sServe1"></span><span class="t1" id="sName1">CPU & CPU</span><span class="g" id="sGames1">0</span><span class="pt" id="sPts1">0</span>
+  </div>
+  <div id="hint" class="px hide"></div>
+  <div id="ctrlHelp">Esc: menu</div>
+</div>
+
+<div id="overPanel" class="hide">
+  <div id="banner" class="px">YOU WIN!</div>
+  <div style="display:flex; gap:12px">
+    <button id="btnAgain">PLAY AGAIN</button>
+    <button id="btnMenu">Menu</button>
+  </div>
+</div>
+
+<div class="topbar"><span id="fps" class="pill"></span><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>
+<div id="soundHint" class="pill">Click anywhere to enable sound</div>
+
+<script type="module" src="js/tennis/game.js"></script>
+</body>
+</html>

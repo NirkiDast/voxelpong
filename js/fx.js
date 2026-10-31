@@ -118,8 +118,9 @@ export class Rings {
 
 // Voxel afterimage trail behind the ball.
 export class Trail {
-  constructor(scene, n = 26) {
+  constructor(scene, n = 26, size = T.R * 2) {
     this.n = n;
+    this.size = size;
     this.hist = [];
     this.mesh = new THREE.InstancedMesh(BOX, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }), n);
     this.mesh.frustumCulled = false;
@@ -144,7 +145,7 @@ export class Trail {
         continue;
       }
       const k = 1 - i / this.n;
-      const s = T.R * 2 * (0.25 + 0.75 * k) * Math.min(1, h.s / 3);
+      const s = this.size * (0.25 + 0.75 * k) * Math.min(1, h.s / 3);
       this.mesh.setMatrixAt(i, _m.compose(h.p, _q.identity(), _s.set(s, s, s)));
       c.copy(this.color).multiplyScalar(k * k * 1.6);
       this.mesh.setColorAt(i, c);

@@ -51,6 +51,11 @@ Optional: `?signal=host:port` points both pages at a self-hosted PeerJS server i
 **Phase 2.6 (done): webcam tracking**
 - Optional "Webcam tracking" toggle in the lobby. MediaPipe Pose Landmarker (vendored in `vendor/mediapipe/`, Apache-2.0) runs locally on the PC and tracks each player's playing wrist and body position; the paddle follows it while the phone supplies angle and swing. Recenter on the phone re-homes the camera. Two players are told apart by which side of the room they stand on.
 
+**Voxel Tennis (phase 1, `tennis.html`)**
+- Second game on the same site: neon indoor wooden court, chibi voxel players with glowing rackets, 2v2 doubles (you + CPU or a friend's phone vs 2 CPUs), tennis scoring.
+- Players run to the ball by themselves. Swing timing aims (early = cross-court, late = down the line), swing speed sets pace, swinging up/down adds topspin/slice, face tilted up lobs. Serve = flick the phone up to toss, then swing.
+- Next: full shot calibration (flat/topspin forehand and backhand, slice, lob, drop shot, toss, flat and spin serves) and the final character look.
+
 **Phase 3: depth and polish**
 - Spin (topspin and backspin from swing direction, curve with the Magnus effect) and better swing classification (forehand, backhand, smash)
 - Proper serve rules, AI personalities, match stats and replays of great rallies
