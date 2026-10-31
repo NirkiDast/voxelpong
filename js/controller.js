@@ -87,17 +87,54 @@ function flashHit(smash) {
   setTimeout(() => { $('paddle').style.filter = ''; }, 120);
 }
 
-// ---------- Motion ----------
-// Tilt comes from the phone's "up" vector. deviceorientation alone is smoothed by the OS and lags,
-// so we integrate the raw gyroscope (devicemotion.rotationRate) for instant response and use
-// orientation only to slowly correct drift. Gyro sign conventions differ between browsers, so two
-// estimates (one per sign) run side by side and the one that agrees with orientation wins.
-let neutral = null;        // { roll, pitch } captured on recenter
-let measured = null;       // latest up vector from deviceorientation
-const est = [null, null];  // gyro-integrated up vectors for sign +1 / -1
-const estErr = [0, 0];
-let lastMotionT = 0;
-let gyroSeen = false;
+// ---------- Racket motion ----------
+// The phone is the racket handle. We track its full 3D orientation and the speed of the racket head,
+// and send both to the PC in "player space": x = your right, y = up, z = toward you (the table is -z).
+//  - Orientation: Chrome's RelativeOrientationSensor (gyro + accelerometer fusion, low latency) when
+//    available, otherwise deviceorientation (iPhone).
+//  - Racket-head velocity: angular velocity x racket length, plus a short-term estimate from linear
+//    acceleration, so both wrist flicks and arm pushes count.
+const RACKET_LEN = 0.45;      // metres from grip to the middle of the blade
+let qDev = null;              // device -> world quaternion [x, y, z, w]
+let wDev = [0, 0, 0];         // angular velocity, device frame, rad/s
+let aDev = [0, 0, 0];         // linear acceleration (no gravity), device frame, m/s^2
+let frame = null;             // { F, U, R } world-space forward/up/right captured at recenter
+let vLin = [0, 0, 0];
+let lastPoseT = 0;
+let sensorKind = 'none';
+
+const rates = { ori: 0, mot: 0, sent: 0 };
+setInterval(() => {
+  link?.send({ t: 'diag', ori: rates.ori, mot: rates.mot, sent: rates.sent, gyro: sensorKind, mode: state.mode, ua: navigator.userAgent.slice(0, 90) });
+  rates.ori = rates.mot = rates.sent = 0;
+}, 1000);
+
+// --- small vector / quaternion helpers ---
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const scale = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+function norm(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+function qmul(a, b) {
+  return [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+}
+function qrot(q, v) {
+  const p = qmul(qmul(q, [v[0], v[1], v[2], 0]), [-q[0], -q[1], -q[2], q[3]]);
+  return [p[0], p[1], p[2]];
+}
+// deviceorientation angles (Z-X'-Y'' intrinsic, degrees) -> quaternion.
+function qFromEuler(alpha, beta, gamma) {
+  const r = Math.PI / 360;
+  const qz = [0, 0, Math.sin(alpha * r), Math.cos(alpha * r)];
+  const qx = [Math.sin(beta * r), 0, 0, Math.cos(beta * r)];
+  const qy = [0, Math.sin(gamma * r), 0, Math.cos(gamma * r)];
+  return qmul(qmul(qz, qx), qy);
+}
 
 async function enableMotion() {
   $('setupErr').textContent = '';
@@ -109,95 +146,114 @@ async function enableMotion() {
       const b = DME && typeof DME.requestPermission === 'function' ? await DME.requestPermission() : 'granted';
       if (a !== 'granted' || b !== 'granted') throw new Error('Motion access was denied. You can use touch controls instead.');
     }
-    addEventListener('deviceorientation', onOrientation);
-    addEventListener('devicemotion', onMotion);
+    if (!startGenericSensors()) startLegacySensors();
     setTimeout(() => {
-      if (!measured) $('setupErr').textContent = 'No motion data yet. If nothing happens, try touch controls.';
+      if (!qDev) $('setupErr').textContent = 'No motion data yet. If nothing happens, try touch controls.';
     }, 1500);
     state.mode = 'motion';
+    frame = null;
     startPlay();
   } catch (e) {
     $('setupErr').textContent = e.message;
   }
 }
 
-function norm(v) {
-  const l = Math.hypot(v[0], v[1], v[2]) || 1;
-  return [v[0] / l, v[1] / l, v[2] / l];
-}
-
-// Up vector in device coordinates from Euler angles. Unlike raw beta/gamma it has no gimbal flip
-// when the phone is held upright.
-function upFromEuler(e) {
-  const b = (e.beta || 0) * Math.PI / 180, g = (e.gamma || 0) * Math.PI / 180;
-  return [-Math.cos(b) * Math.sin(g), Math.sin(b), Math.cos(b) * Math.cos(g)];
-}
-
-// Sensor event rates, reported to the PC once a second for the diagnostics panel.
-const rates = { ori: 0, mot: 0, sent: 0 };
-setInterval(() => {
-  link?.send({ t: 'diag', ori: rates.ori, mot: rates.mot, sent: rates.sent, gyro: gyroSeen, mode: state.mode, ua: navigator.userAgent.slice(0, 90) });
-  rates.ori = rates.mot = rates.sent = 0;
-}, 1000);
-
-function onOrientation(e) {
-  rates.ori++;
-  if (e.beta == null) return;
-  measured = upFromEuler(e);
-  for (let k = 0; k < 2; k++) {
-    if (!est[k]) { est[k] = measured.slice(); continue; }
-    const d = Math.hypot(est[k][0] - measured[0], est[k][1] - measured[1], est[k][2] - measured[2]);
-    estErr[k] = estErr[k] * 0.97 + d;
-    // Gentle pull toward the absolute reading removes gyro drift.
-    est[k] = norm(est[k].map((v, i) => v + (measured[i] - v) * 0.06));
+function startGenericSensors() {
+  if (!('RelativeOrientationSensor' in window) || !('Gyroscope' in window)) return false;
+  try {
+    const ori = new RelativeOrientationSensor({ frequency: 60, referenceFrame: 'device' });
+    const gyr = new Gyroscope({ frequency: 60 });
+    const lin = 'LinearAccelerationSensor' in window ? new LinearAccelerationSensor({ frequency: 60 }) : null;
+    let failed = false;
+    const fail = () => {
+      if (failed) return;
+      failed = true;
+      ori.stop(); gyr.stop(); lin?.stop();
+      startLegacySensors();
+    };
+    ori.addEventListener('error', fail);
+    gyr.addEventListener('error', fail);
+    gyr.addEventListener('reading', () => { wDev = [gyr.x, gyr.y, gyr.z]; rates.mot++; });
+    lin?.addEventListener('reading', () => { aDev = [lin.x, lin.y, lin.z]; });
+    ori.addEventListener('reading', () => {
+      if (failed) return;
+      qDev = Array.from(ori.quaternion);
+      sensorKind = 'sensor-api';
+      rates.ori++;
+      onPose();
+    });
+    ori.start(); gyr.start(); lin?.start();
+    return true;
+  } catch (err) {
+    console.warn('Generic sensors unavailable', err);
+    return false;
   }
-  if (!gyroSeen) applyUp(measured);
 }
 
-function bestEstimate() {
-  if (!est[0]) return measured;
-  return estErr[0] <= estErr[1] ? est[0] : est[1];
+let legacyStarted = false;
+function startLegacySensors() {
+  if (legacyStarted) return;
+  legacyStarted = true;
+  addEventListener('deviceorientation', (e) => {
+    if (e.beta == null || sensorKind === 'sensor-api') return;
+    qDev = qFromEuler(e.alpha || 0, e.beta, e.gamma || 0);
+    sensorKind = 'deviceorientation';
+    rates.ori++;
+    onPose();
+  });
+  addEventListener('devicemotion', (e) => {
+    if (sensorKind === 'sensor-api') return;
+    rates.mot++;
+    const r = e.rotationRate;
+    if (r) wDev = [r.beta || 0, r.gamma || 0, r.alpha || 0].map((v) => v * Math.PI / 180);
+    const a = e.acceleration;
+    if (a) aDev = [a.x || 0, a.y || 0, a.z || 0];
+  });
 }
 
-function applyUp(u) {
-  if (!u || state.mode !== 'motion') return;
-  const roll = -u[0];                  // + when tilted right
-  const pitch = Math.atan2(u[2], u[1]); // 0 upright, + when the top leans away
-  if (!neutral) neutral = { roll, pitch };
-  state.x = clamp((roll - neutral.roll) / 0.42, -1.5, 1.5);
-  state.y = clamp(-(pitch - neutral.pitch) / 0.5, -1.5, 1.5);
-  pushInput();
+// Recenter: the current pose becomes "racket upright, face toward the screen".
+function calibrate() {
+  if (!qDev) return;
+  const up = [0, 0, 1];
+  let f = qrot(qDev, [0, 0, -1]);          // the back of the phone points at the screen
+  f = [f[0], f[1], 0];
+  if (Math.hypot(f[0], f[1]) < 0.3) { const t = qrot(qDev, [0, 1, 0]); f = [t[0], t[1], 0]; }
+  const F = norm(f);
+  frame = { F, U: up, R: cross(F, up) };
+  vLin = [0, 0, 0];
 }
+
+const toPlayer = (v) => [dot(v, frame.R), dot(v, frame.U), -dot(v, frame.F)];
 
 let swingLock = 0;
-function onMotion(e) {
-  rates.mot++;
-  const now = performance.now();
-  const dt = lastMotionT ? clamp((now - lastMotionT) / 1000, 0, 0.05) : 0;
-  lastMotionT = now;
-  const r = e.rotationRate;
-  if (r && r.alpha != null && est[0]) {
-    gyroSeen = true;
-    // Angular velocity in device axes (rad/s): beta is around x, gamma around y, alpha around z.
-    const w = [r.beta, r.gamma, r.alpha].map((v) => (v || 0) * Math.PI / 180);
-    for (let k = 0; k < 2; k++) {
-      const s = k === 0 ? 1 : -1;
-      const u = est[k];
-      // A world-fixed vector seen from a rotating body changes by -w x u.
-      const c = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
-      est[k] = norm([u[0] - s * c[0] * dt, u[1] - s * c[1] * dt, u[2] - s * c[2] * dt]);
-    }
-    applyUp(bestEstimate());
-  }
+function onPose() {
   if (state.mode !== 'motion') return;
-  // Swing: a spike in rotation rate or linear acceleration, sent the instant it is detected.
-  const rot = r ? Math.hypot(r.alpha || 0, r.beta || 0, r.gamma || 0) : 0;
-  const a = e.acceleration || {};
-  const acc = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
-  if (now > swingLock && (rot > 260 || acc > 13)) {
-    swingLock = now + 380;
-    const p = clamp(Math.max((rot - 260) / 500, (acc - 13) / 18), 0, 1) * 0.7 + 0.3;
-    sendSwing(p, clamp((a.x || 0) / 12, -1, 1));
+  if (!frame) calibrate();
+  const now = performance.now();
+  const dt = lastPoseT ? clamp((now - lastPoseT) / 1000, 0, 0.05) : 0.016;
+  lastPoseT = now;
+
+  const head = toPlayer(qrot(qDev, [0, 1, 0]));   // direction from grip to blade
+  const face = toPlayer(qrot(qDev, [0, 0, -1]));  // the hitting face (back of the phone)
+  const w = toPlayer(qrot(qDev, wDev));
+  const a = toPlayer(qrot(qDev, aDev));
+  // Leaky integration gives a short-term arm velocity without long-term drift.
+  vLin = add(scale(vLin, Math.exp(-dt * 7)), scale(a, dt));
+  const v = add(cross(w, scale(head, RACKET_LEN)), scale(vLin, 0.8));
+
+  state.x = clamp(head[0] / 0.7, -1.5, 1.5);
+  state.y = clamp(-face[1] / 0.7, -1.5, 1.5);
+  if (now - state.lastSend >= 8) {
+    const r3 = (u) => u.map((k) => +k.toFixed(3));
+    link?.sendFast({ t: 'r', h: r3(head), n: r3(face), v: r3(v) });
+    rates.sent++;
+    state.lastSend = now;
+  }
+  // A forward swing also fires a discrete event (used to serve, and for the phone's own feedback).
+  const fwd = -v[2];
+  if (fwd > 1.6 && now > swingLock) {
+    swingLock = now + 400;
+    sendSwing(clamp((fwd - 1.6) / 4, 0, 1) * 0.7 + 0.3, clamp(v[0] / 3, -1, 1));
   }
 }
 
@@ -221,7 +277,7 @@ function pushInput() {
   state.sentX = state.x; state.sentY = state.y; state.lastSend = now;
 }
 // Heartbeat so the PC keeps the last position even if packets were dropped.
-setInterval(() => { if (performance.now() - state.lastSend > 200) { state.lastSend = 0; state.sentX = 9; pushInput(); } }, 200);
+setInterval(() => { if (state.mode === 'touch' && performance.now() - state.lastSend > 200) { state.lastSend = 0; state.sentX = 9; pushInput(); } }, 200);
 
 // ---------- Touch / mouse fallback ----------
 let touch = null;
@@ -274,11 +330,7 @@ $('modeBtn').addEventListener('click', () => {
   if (state.mode === 'touch') enableMotion();
   else { state.mode = 'touch'; startPlay(); }
 });
-$('calBtn').addEventListener('click', () => {
-  const u = bestEstimate();
-  if (u) neutral = { roll: -u[0], pitch: Math.atan2(u[2], u[1]) };
-  buzz('join');
-});
+$('calBtn').addEventListener('click', () => { calibrate(); buzz('join'); });
 $('startBtn').addEventListener('click', () => link?.send({ t: 'start' }));
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && wakeLock !== null) {

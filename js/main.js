@@ -132,6 +132,8 @@ const players = [0, 1].map((i) => {
     swingAnim: 1, squash: 0, zoneGlow: 0,
     ai: { plan: null, timer: 0, err: new THREE.Vector2(), swung: false },
     phone: false,
+    // Racket mode: latest pose from the phone (player space) and recent racket-head speeds.
+    control: 'tilt', racket: null, hist: [], resolvedShot: -1,
   };
 });
 
@@ -142,7 +144,7 @@ const ball = {
 
 const G = {
   mode: 'lobby', demo: true, split: false, score: [0, 0], server: 0, rally: 0, timer: 0,
-  hitStop: 0, timeScale: 1, fovPunch: 0, chroma: 0, time: 0, heat: 0,
+  shotId: 0, hitStop: 0, timeScale: 1, fovPunch: 0, chroma: 0, time: 0, heat: 0,
 };
 
 // ---------- Networking ----------
@@ -189,7 +191,16 @@ const host = new Host({
     const i = slot - 1;
     const p = players[i];
     if (!p || !m) return;
-    if (m.t === 'in') {
+    if (m.t === 'r' && Array.isArray(m.h) && Array.isArray(m.n) && Array.isArray(m.v)) {
+      p.control = 'racket';
+      p.racket = { h: new THREE.Vector3(...m.h), n: new THREE.Vector3(...m.n), v: new THREE.Vector3(...m.v) };
+      const now = performance.now();
+      // Player space: forward is -z, right is +x, up is +y.
+      p.hist.push({ t: now, fwd: -m.v[2], lat: m.v[0], up: m.v[1] });
+      while (p.hist.length && now - p.hist[0].t > 400) p.hist.shift();
+      if (i === 0) lastPhoneInput = now;
+    } else if (m.t === 'in') {
+      p.control = 'tilt';
       p.input.x = clamp(+m.x || 0, -1.5, 1.5);
       p.input.y = clamp(+m.y || 0, -1.5, 1.5);
       if (i === 0) lastPhoneInput = performance.now();
@@ -326,6 +337,7 @@ function serve(p, power = 0.5, dir = 0) {
   ball.inPlay = true;
   ball.lastHitter = p;
   ball.bounces = [0, 0];
+  G.shotId++;
   G.mode = 'rally';
   G.rally = 0;
   trail.clear();
@@ -333,12 +345,12 @@ function serve(p, power = 0.5, dir = 0) {
   sendState();
 }
 
-function performHit(p, { power, dir = 0, quality = 1, auto = false, targetX = null }) {
+function performHit(p, { power, dir = 0, quality = 1, auto = false, targetX = null, loft = 0, chop = false }) {
   const pl = players[p];
   const zs = pl.zs;
   power = clamp(power, 0, 1);
   const high = ball.pos.y > T.Y + 0.3;
-  const smash = !auto && power > 0.72 && high && quality > 0.35;
+  const smash = !auto && power > 0.72 && high && quality > 0.35 && (chop || players[p].control !== 'racket');
   const off = ball.pos.x - pl.pos.x;
   let tx = targetX ?? (zs * dir * 0.55 + off * 2.0 + pl.pos.x * 0.15);
   tx = clamp(tx, -0.68, 0.68) + (Math.random() - 0.5) * (1 - quality) * 0.7;
@@ -346,7 +358,14 @@ function performHit(p, { power, dir = 0, quality = 1, auto = false, targetX = nu
   let hs = (3.3 + power * 3.6) * (0.85 + 0.15 * quality);
   if (smash) { hs = 7.6; tz = -zs * rnd(0.8, 1.2); }
   if (auto) hs = 3.0;
+  // An open racket face (tilted back) lifts the ball into a slower, deeper lob.
+  if (!smash && loft > 0.25) {
+    const k = clamp((loft - 0.25) / 0.5, 0, 1);
+    hs *= 1 - 0.4 * k;
+    tz = -zs * clamp(Math.abs(tz) + 0.25 * k, 0.25, 1.3);
+  }
   ball.vel.copy(computeShot(ball.pos, tx, tz, hs));
+  G.shotId++;
   ball.lastHitter = p;
   ball.bounces = [0, 0];
   G.rally++;
@@ -528,7 +547,51 @@ function predict(p) {
 }
 
 // ---------- Player control ----------
+// Racket mode: the paddle moves to the ball by itself (like Wii table tennis), so the phone only
+// has to do what a real racket does: be angled, and be swung at the right moment.
+function updateRacket(pl, dt) {
+  let tx = ball.pos.x * 0.3, ty = T.Y + 0.2;
+  if (G.mode === 'rally' && ball.inPlay && ball.lastHitter !== pl.i) {
+    const plan = predict(pl.i);
+    tx = plan.x;
+    ty = clamp(plan.y, T.Y + 0.03, T.Y + 0.75);
+  } else if (G.mode === 'serve' && G.server === pl.i) {
+    tx = 0; ty = T.Y + 0.14;
+  }
+  // Leaning the racket nudges the paddle sideways a little, so you still feel in control of it.
+  if (pl.racket) tx += pl.racket.h.x * 0.12 * pl.zs;
+  pl.pos.x = damp(pl.pos.x, tx, 10, dt);
+  pl.pos.y = damp(pl.pos.y, ty, 10, dt);
+
+  if (!canHit(pl.i) || pl.resolvedShot === G.shotId) return;
+  const dz = (ball.pos.z - pl.pos.z) * pl.zs; // < 0 while the ball is still in front of the paddle
+  if (dz < -0.06) return;
+  // Contact window: from just before the paddle plane to slightly past it, so a swing that lands a
+  // few milliseconds late (sensor + network) still connects.
+  const now = performance.now();
+  let best = null;
+  for (const h of pl.hist) if (now - h.t < 170 && (!best || h.fwd > best.fwd)) best = h;
+  const d = Math.hypot(ball.pos.x - pl.pos.x, ball.pos.y - pl.pos.y);
+  const quality = clamp(1 - d / 0.3, 0.3, 1);
+  if (best && best.fwd > 1.0) {
+    const r = pl.racket;
+    const aimRel = clamp((r ? r.n.x * 1.3 : 0) + best.lat * 0.06, -0.72, 0.72);
+    performHit(pl.i, {
+      power: clamp((best.fwd - 1.0) / 4.5, 0, 1),
+      quality,
+      targetX: aimRel * pl.zs,
+      loft: r ? r.n.y : 0,
+      chop: best.up < -1.0,
+    });
+    pl.resolvedShot = G.shotId;
+  } else if (dz > 0.12) {
+    pl.resolvedShot = G.shotId;
+    if (settings.assist) performHit(pl.i, { power: 0.15, quality: 0.7, auto: true });
+  }
+}
+
 function updateHuman(pl, dt) {
+  if (pl.control === 'racket') return updateRacket(pl, dt);
   const ap = settings.assist;
   let tx = clamp(pl.input.x, -1.3, 1.3) * 0.85 * pl.zs;
   let ty = T.Y + 0.04 + (clamp(pl.input.y, -1, 1) * 0.5 + 0.5) * 0.4;
@@ -609,9 +672,24 @@ function updatePaddleVisual(pl, dt) {
   const curve = Math.sin(Math.min(1, s * 1.6) * Math.PI) * (1 - s * 0.3);
   const g = pl.pad.group;
   g.position.copy(pl.pos);
-  g.position.z -= pl.zs * curve * 0.12;
-  pl.pad.pivot.rotation.x = -pl.zs * curve * 0.9;
-  pl.pad.pivot.rotation.z = -pl.zs * clamp(pl.pos.x, -1, 1) * 0.35;
+  if (pl.kind === 'human' && pl.control === 'racket' && pl.racket) {
+    // The on-screen racket copies the phone's angle 1:1 (mirrored for the far player).
+    const m = (v) => new THREE.Vector3(v.x * pl.zs, v.y, v.z * pl.zs);
+    const Y = m(pl.racket.h).normalize();
+    let Z = m(pl.racket.n).negate();
+    Z.addScaledVector(Y, -Z.dot(Y)).normalize();
+    const X = new THREE.Vector3().crossVectors(Y, Z);
+    g.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(X, Y, Z));
+    // Lunge forward with the real swing speed.
+    const last = pl.hist[pl.hist.length - 1];
+    g.position.z -= pl.zs * clamp((last ? last.fwd : 0) * 0.025, 0, 0.12);
+    pl.pad.pivot.rotation.set(0, 0, 0);
+  } else {
+    g.quaternion.identity();
+    g.position.z -= pl.zs * curve * 0.12;
+    pl.pad.pivot.rotation.x = -pl.zs * curve * 0.9;
+    pl.pad.pivot.rotation.z = -pl.zs * clamp(pl.pos.x, -1, 1) * 0.35;
+  }
   const sq = 1 + pl.squash * 0.25;
   pl.pad.pivot.scale.set(sq, 1 / sq, 1);
   // Brighten the rim when a hit is possible right now.
