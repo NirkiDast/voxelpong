@@ -101,15 +101,37 @@ export class CamTracker {
   ingest(res, now) {
     const poses = (res.landmarks || []).map((lm, k) => ({ lm, wl: res.worldLandmarks?.[k] }))
       .filter((p) => p.lm[L_SH] && p.lm[R_SH]);
-    let assign;
-    if (this.players === 2) {
-      // Facing the TV, the player on the left of the room shows up on the right of the camera image.
-      poses.sort((a, b) => midX(b.lm) - midX(a.lm));
-      assign = poses.length >= 2 ? [poses[0], poses[1]] : poses.length === 1 ? (midX(poses[0].lm) > 0.5 ? [poses[0], null] : [null, poses[0]]) : [null, null];
-    } else {
-      poses.sort((a, b) => shoulderW(b.lm) - shoulderW(a.lm)); // closest / biggest person
-      assign = [poses[0] || null, null];
+    // Each player locks onto one person and follows them by where their shoulders are, so somebody
+    // else walking past or sitting on the couch behind you never steals the paddle.
+    const n = this.players === 2 ? 2 : 1;
+    const assign = [null, null];
+    const free = new Set(poses);
+    for (let i = 0; i < n; i++) {
+      const tr = this.tracks[i];
+      if (!tr.body || now - tr.bodyT > 1500 || (tr.cal && tr.cal.stage === 'raise')) continue;
+      let best = null, bd = 0.3;
+      for (const p of free) {
+        const d = Math.hypot(midX(p.lm) - tr.body.x, midY(p.lm) - tr.body.y);
+        if (d < bd) { bd = d; best = p; }
+      }
+      if (best) { assign[i] = best; free.delete(best); }
     }
+    for (let i = 0; i < n; i++) {
+      const tr = this.tracks[i];
+      if (assign[i] || (tr.body && now - tr.bodyT <= 1500 && !(tr.cal && tr.cal.stage === 'raise'))) continue;
+      let pool = [...free];
+      if (tr.cal && tr.cal.stage === 'raise' && performance.now() - tr.cal.t0 < 6000) {
+        // While calibrating, the player is whoever raises exactly one hand.
+        pool = pool.filter((p) => raisedWrists(p.lm).length === 1);
+      }
+      if (n === 2) {
+        // Facing the TV, the player on the left of the room shows up on the right of the camera image.
+        pool = pool.filter((p) => (i === 0 ? midX(p.lm) >= 0.5 : midX(p.lm) < 0.5));
+      }
+      pool.sort((x, y) => shoulderW(y.lm) - shoulderW(x.lm));
+      if (pool[0]) { assign[i] = pool[0]; free.delete(pool[0]); }
+    }
+    assign.forEach((p, i) => { if (p) { this.tracks[i].body = { x: midX(p.lm), y: midY(p.lm) }; this.tracks[i].bodyT = now; } });
     assign.forEach((p, i) => { if (p) this.update(i, p, now); });
     const seen = poses.length ? `Tracking: ${poses.length === 1 ? '1 person' : '2 people'} in view` : 'Tracking: step into view';
     if (seen !== this.lastStatus) { this.lastStatus = seen; this.onStatus(seen); }
@@ -192,7 +214,7 @@ export class CamTracker {
     idx.forEach((j) => {
       const tr = this.tracks[j];
       tr.cal = { stage: 'raise', since: 0, cand: 0, t0: performance.now() };
-      tr.wImg = null; tr.home = null; tr.vote = 0;
+      tr.wImg = null; tr.home = null; tr.vote = 0; tr.body = null;
       this.onCalib?.(j, 'raise');
     });
   }
@@ -204,8 +226,7 @@ export class CamTracker {
     const c = tr.cal;
     if (c.stage === 'raise') {
       // A wrist clearly above the nose (in image y, smaller is higher) counts as raised.
-      const head = lm[0].y;
-      const up = [L_WR, R_WR].filter((w) => lm[w].y < head - 0.03 && (lm[w].visibility ?? 1) > 0.3);
+      const up = raisedWrists(lm);
       let cand = up.length === 1 ? up[0] : 0; // both hands up is ambiguous
       // Never get stuck here: after 6 s, go with the hand the phone's swing calibration says you use.
       const timedOut = now - c.t0 > 6000;
@@ -305,9 +326,12 @@ export class CamTracker {
     ctx.font = '11px ui-monospace, monospace';
     const names = this.players === 2 ? ['P1', 'P2'] : ['YOU'];
     const st = names.map((n, i) => `${n} ${this.tracks[i].cal ? 'calibrating' : this.tracked(i) ? '✓' : '–'}`).join('  ');
-    ctx.fillText(`${st}   ${Math.round(this.fps)} fps · ${Math.round(this.latency)} ms`, 6, h - 5);
+    ctx.fillText(`${st}   ${Math.round(this.fps)} fps · ${Math.round(this.latency)} ms ${this.delegate === 'GPU' ? 'G' : 'C'}`, 6, h - 5);
   }
 }
 
+function midY(lm) { return (lm[L_SH].y + lm[R_SH].y) / 2; }
+// Wrists clearly above the nose (image y grows downward).
+function raisedWrists(lm) { return [L_WR, R_WR].filter((w) => lm[w].y < lm[0].y - 0.03 && (lm[w].visibility ?? 1) > 0.3); }
 function midX(lm) { return (lm[L_SH].x + lm[R_SH].x) / 2; }
 function shoulderW(lm) { return Math.hypot(lm[L_SH].x - lm[R_SH].x, lm[L_SH].y - lm[R_SH].y); }

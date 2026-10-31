@@ -19,8 +19,9 @@ self.onmessage = async (e) => {
         runningMode: 'VIDEO', numPoses: 2,
         minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
       });
-      // CPU in this thread keeps the graphics card free for the game.
-      let delegate = m.delegate || 'CPU';
+      // The graphics card is several times faster than the CPU for this model. It runs in this
+      // background thread with its own context, so it doesn't block the game's frames.
+      let delegate = m.delegate || 'GPU';
       try { lm = await PoseLandmarker.createFromOptions(fileset, opts(delegate)); }
       catch { delegate = delegate === 'CPU' ? 'GPU' : 'CPU'; lm = await PoseLandmarker.createFromOptions(fileset, opts(delegate)); }
       self.postMessage({ type: 'ready', delegate });
