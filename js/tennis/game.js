@@ -313,6 +313,7 @@ function toss(s) {
   if (G.phase !== 'serve') return;
   G.phase = 'toss';
   G.timer = 0;
+  G.toss0 = G.time;
   ball.held = false;
   ball.vel.set(0, 5.4, 0);
   ball.spin = 0;
@@ -447,7 +448,7 @@ function onSwing(i, power, extra = {}) {
     return;
   }
   if (G.server === i && G.phase === 'toss') {
-    if (ball.pos.y > 1.7 && G.timer > 0.2) {
+    if (p.control !== 'racket' && ball.pos.y > 1.7 && G.timer > 0.2) {
       const spin = racketSpin(p);
       hitServe(p, power, { spin: spin > 0.25 ? 0.8 : 0, aim: extra.aim || 0 });
     }
@@ -455,8 +456,39 @@ function onSwing(i, power, extra = {}) {
   }
   p.swingAnim = 0;
   sfx.whoosh(power);
-  p.swing = { t: G.time, power, spin: racketSpin(p), lob: extra.lob || (p.racket ? p.racket.n.y > 0.5 : false), aim: extra.aim || 0 };
+  // Phone racket swings are read straight from the motion stream at contact (racketHit), like ping pong.
+  if (p.control === 'racket') return;
+  p.swing = { t: G.time, power, spin: 0, lob: !!extra.lob, aim: extra.aim || 0 };
   tryHumanHit(p);
+}
+
+// Phone racket mode: when the ball reaches you, look back over the last half second of racket motion
+// for the fastest forward swing. Its peak sets the timing (aim) and its speed sets the power.
+const RLATE = 0.2;
+function racketHit(p) {
+  const pl = p.plan;
+  const thr = p.profile?.thr ?? 1.0, full = p.profile?.full ?? 5.5;
+  let best = null;
+  for (const h of p.hist) if (h.gt >= pl.t - EARLY && (!best || h.fwd > best.fwd)) best = h;
+  const late = G.time > pl.t + RLATE;
+  if (!best || best.fwd <= thr) { if (late) pl.done = true; return; }
+  // Still speeding up? Give it a couple of frames to reach its peak.
+  const lastH = p.hist[p.hist.length - 1];
+  if (best === lastH && !late && G.time < pl.t + 0.08) return;
+  const d = Math.hypot(p.pos.x - pl.stand.x, p.pos.z - pl.stand.z);
+  if (d > REACH) { pl.done = true; return; }
+  const dt = pl.t - best.gt;                       // > 0: swing peaked before the ball arrived
+  const tim = clamp((dt - 0.03) / 0.16, -1, 1);
+  const handX = sideOf(p.team) * (p.hand === 'left' ? -1 : 1);
+  const pullDir = pl.fore ? -handX : handX;
+  let up = 0, n = 0;
+  for (const h of p.hist) if (Math.abs(h.t - best.t) < 90) { up += h.up; n++; }
+  up = n ? up / n : 0;
+  const spin = up > 0.8 ? clamp(up / 2.5, 0.25, 1) : up < -0.8 ? -0.6 : 0;
+  const quality = clamp(1 - Math.abs(dt - 0.03) / 0.4, 0.4, 1);
+  hitBall(p, { power: clamp((best.fwd - thr) / (full - thr), 0.1, 1), aim: clamp(tim * pullDir * 0.9, -1, 1), spin, quality });
+  if (!G.demo && Math.abs(dt - 0.03) < 0.05) popupAt('PERFECT', ball.pos, TEAM_COLORS[p.team], 'big');
+  p.swingAnim = 0;
 }
 
 // Upward racket-head motion during the swing means topspin, downward means slice.
@@ -487,10 +519,7 @@ function tryHumanHit(p) {
   const quality = clamp(1 - Math.abs(dt - SWEET) / 0.45, 0.35, 1);
   const call = Math.abs(dt - SWEET) < 0.05 ? 'PERFECT' : null;
   hitBall(p, { power: sw.power, aim: aimWorld, spin: sw.spin, lob: sw.lob, quality });
-  if (call && !G.demo) popupAt(call, ball.pos, TEAM_COLORS[p.team]);
-  if (sw.spin > 0.25 && !G.demo) popupAt('TOPSPIN', ball.pos, 0xffd166, 'small');
-  else if (sw.spin < 0 && !G.demo) popupAt('SLICE', ball.pos, 0x9b5cff, 'small');
-  else if (sw.lob && !G.demo) popupAt('LOB', ball.pos, 0xffffff, 'small');
+  if (call && !G.demo) popupAt(call, ball.pos, TEAM_COLORS[p.team], 'big');
   p.swing = null;
   return true;
 }
@@ -602,6 +631,8 @@ function updatePlayer(p, dt) {
       const reach = Math.hypot(p.pos.x - p.plan.stand.x, p.pos.z - p.plan.stand.z);
       if (reach < REACH) aiHit(p);
       else p.plan.done = true;
+    } else if (p.control === 'racket') {
+      racketHit(p);
     } else if (!tryHumanHit(p) && G.time > p.plan.t + LATE) {
       p.plan.done = true;
     }
@@ -657,6 +688,18 @@ function animatePlayer(p, dt) {
   }
 }
 
+// Serving in racket mode: a forward swing after the toss went up hits the serve.
+function serveSwing(s) {
+  const thr = s.profile?.thr ?? 1.0, full = s.profile?.full ?? 5.5;
+  const now = performance.now();
+  let best = null;
+  for (const h of s.hist) if (h.gt > G.toss0 + 0.25 && now - h.t < 150 && (!best || h.fwd > best.fwd)) best = h;
+  if (!best || best.fwd <= thr) return false;
+  const up = best.up;
+  hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: up > 0.8 ? 0.8 : 0 });
+  return true;
+}
+
 // ---------- Main update ----------
 function update(dt) {
   G.time += dt;
@@ -669,7 +712,7 @@ function update(dt) {
     if (s.kind === 'ai' && G.timer > (G.demo ? 0.8 : 1.3)) toss(s);
     if (s.kind === 'human' && s.control === 'racket' && G.timer > 0.4) {
       const now = performance.now();
-      if (s.hist.some((h) => now - h.t < 120 && h.up > 1.3 && h.up > Math.abs(h.fwd) * 1.2)) toss(s);
+      if (s.hist.some((h) => now - h.t < 120 && h.up > 2.0 && h.up > Math.abs(h.fwd) * 1.5)) toss(s);
     }
   } else if (G.phase === 'toss') {
     stepBall(ball, dt);
@@ -677,9 +720,11 @@ function update(dt) {
       const L = AI_LEVELS[G.demo ? 'medium' : settings.level];
       const fault = Math.random() < (G.second ? L.fault * 0.4 : L.fault);
       hitServe(s, G.second ? rnd(0.3, 0.55) : rnd(0.55, 0.9), { spin: G.second ? 0.8 : 0, aim: rnd(-1, 1) * (fault ? 3 : 0.8) });
+    } else if (s.kind === 'human' && s.control === 'racket' && ball.pos.y > 1.7 && G.timer > 0.3 && serveSwing(s)) {
+      // served from the motion stream
     } else if (ball.pos.y <= C.R + 0.01 && ball.vel.y <= 0.01) {
       // Dropped the toss: just take it again.
-      if (!G.demo && s.kind === 'human') popupAt('TOSS AGAIN', ball.pos, 0xffffff, 'small');
+      if (!G.demo && s.kind === 'human') setHint('Missed it: flick up to toss again, then swing');
       G.phase = 'serve';
       G.timer = 0;
       s.serveAnim = -1;
@@ -763,8 +808,8 @@ const host = new Host({
       p.control = 'racket';
       p.racket = { h: new THREE.Vector3(...m.h), n: new THREE.Vector3(...m.n), v: new THREE.Vector3(...m.v) };
       const now = performance.now();
-      p.hist.push({ t: now, fwd: -m.v[2], lat: m.v[0], up: m.v[1] });
-      while (p.hist.length && now - p.hist[0].t > 400) p.hist.shift();
+      p.hist.push({ t: now, gt: G.time, fwd: -m.v[2], lat: m.v[0], up: m.v[1] });
+      while (p.hist.length && now - p.hist[0].t > 900) p.hist.shift();
     } else if (m.t === 'in') {
       p.control = 'tilt';
     } else if (m.t === 'sw') {
