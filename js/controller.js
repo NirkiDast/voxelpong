@@ -35,10 +35,13 @@ function boot() {
   link = new Controller({
     room, slot,
     onStatus(s) {
-      const ok = s === 'connected';
+      const ok = s === 'connected' || s === 'connected-relay';
       $('dot').classList.toggle('ok', ok);
       $('conn').textContent = {
         connecting: 'Connecting…', connected: `P${slot} · room ${room}`,
+        'connected-relay': `P${slot} · room ${room} · via relay`,
+        relaying: 'Direct link blocked by this network, trying the relay…',
+        nolink: 'Could not reach the big screen. Check both have internet; retrying…',
         nohost: 'Big screen not found, retrying…', lost: 'Connection lost, retrying…',
       }[s] || s;
       if (ok) { buzz('join'); if (profile) link.send({ t: 'prof', ...profile }); }
