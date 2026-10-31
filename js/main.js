@@ -133,7 +133,7 @@ const players = [0, 1].map((i) => {
     ai: { plan: null, timer: 0, err: new THREE.Vector2(), swung: false },
     phone: false,
     // Racket mode: latest pose from the phone (player space) and recent racket-head speeds.
-    control: 'tilt', racket: null, hist: [], resolvedShot: -1,
+    control: 'tilt', racket: null, hist: [], resolvedShot: -1, profile: null,
   };
 });
 
@@ -196,7 +196,7 @@ const host = new Host({
       p.racket = { h: new THREE.Vector3(...m.h), n: new THREE.Vector3(...m.n), v: new THREE.Vector3(...m.v) };
       const now = performance.now();
       // Player space: forward is -z, right is +x, up is +y.
-      p.hist.push({ t: now, fwd: -m.v[2], lat: m.v[0], up: m.v[1] });
+      p.hist.push({ t: now, fwd: -m.v[2], lat: m.v[0], up: m.v[1], w: Array.isArray(m.w) ? m.w : null });
       while (p.hist.length && now - p.hist[0].t > 400) p.hist.shift();
       if (i === 0) lastPhoneInput = now;
     } else if (m.t === 'in') {
@@ -215,6 +215,17 @@ const host = new Host({
       const rtt = performance.now() - m.ts;
       pingMs[i] = pingMs[i] ? pingMs[i] * 0.7 + rtt * 0.3 : rtt;
       showPing();
+    } else if (m.t === 'prof') {
+      // Personal swing profile from the phone's calibration.
+      p.profile = {
+        thr: clamp(+m.thr || 1, 0.4, 4), full: clamp(+m.full || 5.5, 1.5, 15), win: clamp(+m.win || 170, 120, 260),
+        fh: Array.isArray(m.fh) ? m.fh : null, bh: Array.isArray(m.bh) ? m.bh : null,
+      };
+      if (p.profile.full < p.profile.thr * 1.5) p.profile.full = p.profile.thr * 1.5;
+      popupScreen(`P${slot} SWING CALIBRATED`, p.color.getHex());
+      $(`p${slot}State`).textContent = 'Phone connected · swings calibrated';
+    } else if (m.t === 'cal') {
+      $(`p${slot}State`).textContent = m.state === 'start' ? 'Calibrating swings…' : (p.profile ? 'Phone connected · swings calibrated' : 'Phone connected');
     } else if (m.t === 'diag') {
       diag.phone[i] = m;
     } else if (m.t === 'start') {
@@ -570,14 +581,22 @@ function updateRacket(pl, dt) {
   // few milliseconds late (sensor + network) still connects.
   const now = performance.now();
   let best = null;
-  for (const h of pl.hist) if (now - h.t < 170 && (!best || h.fwd > best.fwd)) best = h;
+  const prof = pl.profile;
+  const thr = prof ? prof.thr : 1.0, full = prof ? prof.full : 5.5, win = prof ? prof.win : 170;
+  for (const h of pl.hist) if (now - h.t < win && (!best || h.fwd > best.fwd)) best = h;
   const d = Math.hypot(ball.pos.x - pl.pos.x, ball.pos.y - pl.pos.y);
   const quality = clamp(1 - d / 0.3, 0.3, 1);
-  if (best && best.fwd > 1.0) {
+  if (best && best.fwd > thr) {
     const r = pl.racket;
+    // Forehand or backhand: whichever calibrated wrist rotation this swing resembles more.
+    if (prof && prof.fh && prof.bh && best.w) {
+      const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      const side = dot3(best.w, prof.fh) >= dot3(best.w, prof.bh) ? 'FOREHAND' : 'BACKHAND';
+      if (best.fwd > (thr + full) / 2) popup3D(side, ball.pos, pl.color.getHex(), '', pl.i);
+    }
     const aimRel = clamp((r ? r.n.x * 1.3 : 0) + best.lat * 0.06, -0.72, 0.72);
     performHit(pl.i, {
-      power: clamp((best.fwd - 1.0) / 4.5, 0, 1),
+      power: clamp((best.fwd - thr) / (full - thr), 0, 1),
       quality,
       targetX: aimRel * pl.zs,
       loft: r ? r.n.y : 0,

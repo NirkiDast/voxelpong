@@ -16,7 +16,7 @@ let link = null;
 
 // ---------- Screens ----------
 function show(id) {
-  for (const s of ['join', 'setup', 'play']) $(s).classList.toggle('hide', s !== id);
+  for (const s of ['join', 'setup', 'calib', 'play']) $(s).classList.toggle('hide', s !== id);
 }
 
 if (!room) show('join');
@@ -40,7 +40,7 @@ function boot() {
         connecting: 'Connecting…', connected: `P${slot} · room ${room}`,
         nohost: 'Big screen not found, retrying…', lost: 'Connection lost, retrying…',
       }[s] || s;
-      if (ok) buzz('join');
+      if (ok) { buzz('join'); if (profile) link.send({ t: 'prof', ...profile }); }
     },
     onData,
   });
@@ -152,7 +152,7 @@ async function enableMotion() {
     }, 1500);
     state.mode = 'motion';
     frame = null;
-    startPlay();
+    startCalibration();
   } catch (e) {
     $('setupErr').textContent = e.message;
   }
@@ -183,6 +183,8 @@ function startGenericSensors() {
       onPose();
     });
     ori.start(); gyr.start(); lin?.start();
+    // Some browsers expose the API but never deliver readings; fall back if nothing arrives.
+    setTimeout(() => { if (sensorKind !== 'sensor-api') startLegacySensors(); }, 1000);
     return true;
   } catch (err) {
     console.warn('Generic sensors unavailable', err);
@@ -240,22 +242,136 @@ function onPose() {
   // Leaky integration gives a short-term arm velocity without long-term drift.
   vLin = add(scale(vLin, Math.exp(-dt * 7)), scale(a, dt));
   const v = add(cross(w, scale(head, RACKET_LEN)), scale(vLin, 0.8));
+  if (recording) recording.samples.push({ t: now, v, w });
 
   state.x = clamp(head[0] / 0.7, -1.5, 1.5);
   state.y = clamp(-face[1] / 0.7, -1.5, 1.5);
   if (now - state.lastSend >= 8) {
     const r3 = (u) => u.map((k) => +k.toFixed(3));
-    link?.sendFast({ t: 'r', h: r3(head), n: r3(face), v: r3(v) });
+    link?.sendFast({ t: 'r', h: r3(head), n: r3(face), v: r3(v), w: r3(w) });
     rates.sent++;
     state.lastSend = now;
   }
   // A forward swing also fires a discrete event (used to serve, and for the phone's own feedback).
   const fwd = -v[2];
-  if (fwd > 1.6 && now > swingLock) {
+  const thr = profile ? profile.thr * 1.2 : 1.6;
+  const full = profile ? profile.full : 5.6;
+  if (!recording && fwd > thr && now > swingLock) {
     swingLock = now + 400;
-    sendSwing(clamp((fwd - 1.6) / 4, 0, 1) * 0.7 + 0.3, clamp(v[0] / 3, -1, 1));
+    sendSwing(clamp((fwd - thr) / (full - thr), 0, 1) * 0.7 + 0.3, clamp(v[0] / 3, -1, 1));
   }
 }
+
+// ---------- Swing calibration ----------
+// Step 1: face the TV and recenter. Steps 2 and 3: three forehands, then three backhands. For each
+// swing the player holds a thumb on the pad from the start of the motion to the end, which cuts the
+// recording cleanly. From that we learn how hard this person swings, how long a swing takes, and
+// which way their wrist turns on each side. The profile is saved on the phone and sent to the PC.
+let profile = null;
+try { profile = JSON.parse(localStorage.getItem('vxpp-swing-profile') || 'null'); } catch { /* private mode */ }
+let recording = null;
+const cal = { step: 0, swings: { fh: [], bh: [] } };
+const CAL_STEPS = [
+  { key: 'center', title: 'FACE THE TV', text: 'Stand where you will play. Hold the phone like a racket handle: upright, screen facing you, the back pointing at the TV. Then tap the circle.', pad: 'TAP WHEN READY' },
+  { key: 'fh', title: 'FOREHAND x3', text: 'Press and hold the circle with your thumb, do a normal forehand swing toward the TV, and let go the moment the swing ends.', pad: 'HOLD, SWING, RELEASE' },
+  { key: 'bh', title: 'BACKHAND x3', text: 'Same again with your backhand: hold the circle, swing, and release when the swing ends.', pad: 'HOLD, SWING, RELEASE' },
+];
+
+function startCalibration() {
+  cal.step = 0;
+  cal.swings = { fh: [], bh: [] };
+  $('calSkip').textContent = profile ? 'Use my last calibration' : 'Skip';
+  show('calib');
+  renderCal();
+  link?.send({ t: 'cal', state: 'start' });
+}
+
+function renderCal(msg = '') {
+  const st = CAL_STEPS[cal.step];
+  $('calStep').textContent = `STEP ${cal.step + 1} OF 3`;
+  $('calTitle').textContent = st.title;
+  $('calText').textContent = st.text;
+  $('holdPad').textContent = st.pad;
+  const n = st.key === 'center' ? -1 : cal.swings[st.key].length;
+  $('calDots').classList.toggle('hide', n < 0);
+  [...$('calDots').children].forEach((d, i) => d.classList.toggle('done', i < n));
+  $('calMsg').textContent = msg;
+}
+
+$('holdPad').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const st = CAL_STEPS[cal.step];
+  if (st.key === 'center') {
+    if (!qDev) { renderCal('Waiting for motion sensors…'); return; }
+    calibrate();
+    buzz('join');
+    cal.step = 1;
+    renderCal();
+    return;
+  }
+  $('holdPad').classList.add('down');
+  recording = { t0: performance.now(), samples: [] };
+  if (canVibrate) navigator.vibrate(10);
+});
+const endHold = () => {
+  if (!recording) return;
+  $('holdPad').classList.remove('down');
+  const rec = recording;
+  recording = null;
+  analyzeSwing(rec);
+};
+$('holdPad').addEventListener('pointerup', endHold);
+$('holdPad').addEventListener('pointercancel', endHold);
+$('holdPad').addEventListener('contextmenu', (e) => e.preventDefault());
+
+function analyzeSwing(rec) {
+  const st = CAL_STEPS[cal.step];
+  const dur = performance.now() - rec.t0;
+  let peak = 0, peakAt = 0;
+  for (const s of rec.samples) { const f = -s.v[2]; if (f > peak) { peak = f; peakAt = s.t - rec.t0; } }
+  if (dur < 120 || rec.samples.length < 4) return renderCal('Too quick: hold the circle for the whole swing.');
+  if (dur > 3000) return renderCal('That was long: press when you start swinging, release when you finish.');
+  if (peak < 0.8) return renderCal('Swing a bit harder, toward the TV.');
+  // Average rotation direction during the fast part of the swing, weighted by speed.
+  const axis = [0, 0, 0];
+  for (const s of rec.samples) {
+    if (-s.v[2] < peak * 0.4) continue;
+    for (let k = 0; k < 3; k++) axis[k] += s.w[k];
+  }
+  cal.swings[st.key].push({ peak, dur, peakAt, axis: norm(axis), lat: rec.samples.reduce((a, s) => a + s.v[0], 0) / rec.samples.length });
+  buzz('hit', 0.6);
+  if (cal.swings[st.key].length < 3) return renderCal(`Nice! ${3 - cal.swings[st.key].length} to go.`);
+  if (cal.step === 1) { cal.step = 2; return renderCal('Forehand learned.'); }
+  finishCalibration();
+}
+
+const median = (a) => { const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
+function finishCalibration() {
+  const all = [...cal.swings.fh, ...cal.swings.bh];
+  const typical = median(all.map((s) => s.peak));
+  const meanAxis = (list) => norm(list.reduce((a, s) => add(a, s.axis), [0, 0, 0]));
+  profile = {
+    thr: +Math.max(0.6, typical * 0.3).toFixed(2),   // gentler than this is not a swing
+    full: +(typical * 1.15).toFixed(2),               // a normal swing lands around 85% power
+    win: Math.round(clamp(median(all.map((s) => s.peakAt)) + 60, 120, 260)), // ms of timing slack
+    fh: meanAxis(cal.swings.fh).map((k) => +k.toFixed(3)),
+    bh: meanAxis(cal.swings.bh).map((k) => +k.toFixed(3)),
+    // Right-handed forehands sweep right to left across the body.
+    hand: median(cal.swings.fh.map((s) => s.lat)) < 0 ? 'right' : 'left',
+  };
+  try { localStorage.setItem('vxpp-swing-profile', JSON.stringify(profile)); } catch { /* private mode */ }
+  link?.send({ t: 'prof', ...profile });
+  buzz('win');
+  startPlay();
+}
+
+$('calRedo').addEventListener('click', startCalibration);
+$('calSkip').addEventListener('click', () => {
+  if (!frame) calibrate();
+  if (profile) link?.send({ t: 'prof', ...profile });
+  startPlay();
+});
+$('swingCalBtn').addEventListener('click', startCalibration);
 
 let swingId = 0;
 function sendSwing(p, d) {
@@ -321,6 +437,8 @@ async function startPlay() {
   $('touchHint').classList.toggle('hide', state.mode !== 'touch');
   $('modeBtn').textContent = state.mode === 'touch' ? 'Motion mode' : 'Touch mode';
   $('calBtn').classList.toggle('hide', state.mode === 'touch');
+  $('swingCalBtn').classList.toggle('hide', state.mode === 'touch');
+  link?.send({ t: 'cal', state: 'done' });
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not supported */ }
 }
 

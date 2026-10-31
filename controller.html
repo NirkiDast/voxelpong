@@ -37,6 +37,15 @@
   #hitFlash { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(circle, var(--me), transparent 70%); }
   #touchHint { font-size: 12px; color: rgba(255,255,255,0.5); }
   /* iOS 18+ gives a haptic tick when a switch input is toggled; used as a vibration fallback. */
+  #calib { gap: 14px; }
+  #calStep { font-size: 11px; color: var(--gold); }
+  #calTitle { font-size: 16px; }
+  #holdPad { width: 210px; height: 210px; border-radius: 50%; border: 3px solid var(--me); background: radial-gradient(circle, rgba(255,255,255,0.08), transparent 70%); color: #fff; display: flex; align-items: center; justify-content: center; text-align: center; font-family: 'Press Start 2P', monospace; font-size: 11px; line-height: 1.6; padding: 20px; -webkit-touch-callout: none; box-shadow: 0 0 24px color-mix(in srgb, var(--me) 40%, transparent); transition: transform 0.08s, background 0.08s; }
+  #holdPad.down { transform: scale(0.94); background: radial-gradient(circle, var(--me), transparent 75%); }
+  #calDots { display: flex; gap: 10px; }
+  #calDots span { width: 14px; height: 14px; border-radius: 4px; background: rgba(255,255,255,0.12); }
+  #calDots span.done { background: var(--me); box-shadow: 0 0 10px var(--me); }
+  #calMsg { min-height: 20px; font-weight: 600; }
   #hapticSwitch { position: absolute; opacity: 0; pointer-events: none; left: -100px; }
 </style>
 <script src="vendor/peerjs.min.js"></script>
@@ -59,6 +68,16 @@
   <p id="setupErr" style="color:#ff8a8a"></p>
 </div>
 
+<div class="screen hide" id="calib">
+  <div id="calStep" class="px">STEP 1 OF 3</div>
+  <h1 class="px" id="calTitle">FACE THE TV</h1>
+  <p id="calText"></p>
+  <button id="holdPad"></button>
+  <div id="calDots"><span></span><span></span><span></span></div>
+  <div id="calMsg"></div>
+  <div class="row"><button id="calRedo">Start over</button><button id="calSkip">Skip</button></div>
+</div>
+
 <div class="screen hide" id="play">
   <div id="scoreRow" class="px"><span id="you">0</span><span style="opacity:.4">-</span><span id="them">0</span></div>
   <div id="cue" class="px"></div>
@@ -71,6 +90,7 @@
   <div id="touchHint" class="hide">Drag to move. Flick up (or tap) to swing.</div>
   <div class="row">
     <button id="calBtn">Recenter (face TV)</button>
+    <button id="swingCalBtn">Calibrate swings</button>
     <button id="startBtn">Start game</button>
     <button id="modeBtn">Touch mode</button>
   </div>
