@@ -168,14 +168,13 @@ const host = new Host({
       el.className = 'pill';
     }
   },
-  onJoin(slot) {
+  onJoin(slot, rejoin) {
     const i = slot - 1;
     if (!players[i]) return;
     players[i].phone = true;
     $(`p${slot}State`).textContent = 'Phone connected';
     $(`p${slot}Card`).classList.add('joined');
-    sfx.join();
-    popupScreen(`P${slot} CONNECTED`, players[i].color.getHex());
+    if (!rejoin) { sfx.join(); popupScreen(`P${slot} CONNECTED`, players[i].color.getHex()); }
     if (slot === 2 && G.demo) selectMode('2p');
     sendState();
   },
@@ -227,7 +226,8 @@ const host = new Host({
       };
       if (cam) cam.hand[i] = p.profile.hand;
       if (p.profile.full < p.profile.thr * 1.5) p.profile.full = p.profile.thr * 1.5;
-      popupScreen(`P${slot} SWING CALIBRATED`, p.color.getHex());
+      if (JSON.stringify(m) !== p.lastProf) popupScreen(`P${slot} SWING CALIBRATED`, p.color.getHex());
+      p.lastProf = JSON.stringify(m);
       $(`p${slot}State`).textContent = 'Phone connected · swings calibrated';
     } else if (m.t === 'cal') {
       $(`p${slot}State`).textContent = m.state === 'start' ? 'Calibrating swings…' : (p.profile ? 'Phone connected · swings calibrated' : 'Phone connected');

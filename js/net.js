@@ -53,21 +53,25 @@ function makeCode() {
   return s;
 }
 
-function storedCode() {
-  try { return localStorage.getItem('vxpp-room'); } catch { return null; }
+// Each game page keeps its own room code, so having ping pong and tennis open in two tabs
+// doesn't make them fight over the same pairing id.
+function storedCode(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
 }
-function storeCode(c) {
-  try { localStorage.setItem('vxpp-room', c); } catch { /* private mode */ }
+function storeCode(key, c) {
+  try { localStorage.setItem(key, c); } catch { /* private mode */ }
 }
 
 // Host: keeps one connection per controller slot (1, 2).
 export class Host {
-  constructor({ onStatus, onJoin, onLeave, onData }) {
+  constructor({ onStatus, onJoin, onLeave, onData, roomKey = 'vxpp-room' }) {
     this.handlers = { onStatus, onJoin, onLeave, onData };
+    this.roomKey = roomKey;
+    this.lastSeen = {};     // slot -> when that phone last dropped, to spot quick reconnects
     this.conns = new Map(); // slot -> DataConnection
     this.fast = new Map();  // slot -> RTCDataChannel (lossy)
     this.counts = {};       // slot -> messages received per channel, for the diagnostics panel
-    this.code = storedCode() || makeCode();
+    this.code = storedCode(roomKey) || makeCode();
     this.retries = 0;
     this.start();
   }
@@ -79,7 +83,7 @@ export class Host {
     const peer = new Peer(ID_PREFIX + this.code, peerConfig());
     this.peer = peer;
     peer.on('open', () => {
-      storeCode(this.code);
+      storeCode(this.roomKey, this.code);
       this.retries = 0;
       this.handlers.onStatus('ready', this.code);
     });
@@ -108,15 +112,17 @@ export class Host {
     const slot = Number(conn.metadata?.slot) || 1;
     conn.on('open', () => {
       const old = this.conns.get(slot);
-      if (old && old !== conn) old.close();
+      const rejoin = !!old || performance.now() - (this.lastSeen[slot] || -1e9) < 20000;
       this.conns.set(slot, conn);
+      if (old && old !== conn) old.close();
       this.counts[slot] = { fast: 0, reliable: 0 };
       this.fast.set(slot, openFast(conn, (m) => { this.counts[slot].fast++; this.handlers.onData(slot, m); }));
-      this.handlers.onJoin(slot);
+      this.handlers.onJoin(slot, rejoin);
     });
     conn.on('data', (msg) => { if (this.counts[slot]) this.counts[slot].reliable++; this.handlers.onData(slot, msg); });
     const drop = () => {
       if (this.conns.get(slot) === conn) {
+        this.lastSeen[slot] = performance.now();
         this.conns.delete(slot);
         this.fast.delete(slot);
         this.handlers.onLeave(slot);
@@ -163,6 +169,9 @@ export class Controller {
   }
 
   connect() {
+    // The pairing server link can drop and come back; don't open a second game connection if
+    // the first one is still fine (that used to kick the phone off and back on in a loop).
+    if (this.conn && this.conn.open) return;
     const conn = this.peer.connect(ID_PREFIX + this.room, {
       metadata: { slot: this.slot },
       serialization: 'json',
@@ -173,7 +182,7 @@ export class Controller {
       this.onStatus('connected');
     });
     conn.on('data', (m) => this.onData(m));
-    conn.on('close', () => { this.onStatus('lost'); this.retry(); });
+    conn.on('close', () => { if (this.conn !== conn) return; this.onStatus('lost'); this.retry(); });
   }
 
   retry() {

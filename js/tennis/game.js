@@ -11,7 +11,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { C, TEAM_COLORS, buildArena, buildPlayer, buildTennisBall } from './court.js';
+import { C, TEAM_COLORS, buildArena, buildTennisBall } from './court.js';
+import { createSmolPlayer } from './smolchar.js';
 import { Particles, Rings, Trail, Shake } from '../fx.js';
 import { Host } from '../net.js';
 import { sfx, unlockAudio } from '../audio.js';
@@ -114,18 +115,14 @@ composer.addPass(new OutputPass());
 
 // ---------- Players ----------
 // 0: you (near team, A), 1: your partner (near, B), 2 and 3: the far team.
-const LOOKS = [
-  { skin: 0xf1c27d, hair: 0x2b1b12 }, { skin: 0xc68642, hair: 0x101010 },
-  { skin: 0xe0ac69, hair: 0x8a3b12 }, { skin: 0x8d5524, hair: 0x1a1a1a },
-];
 const players = [0, 1, 2, 3].map((i) => {
   const team = i < 2 ? 0 : 1;
-  const ch = buildPlayer({ color: TEAM_COLORS[team], ...LOOKS[i] });
+  const ch = createSmolPlayer(i, TEAM_COLORS[team]);
   scene.add(ch.group);
   return {
     i, team, ch, kind: 'ai', slot: i < 2 ? i + 1 : 0, phone: false,
     pos: new THREE.Vector3(), vel: new THREE.Vector3(), role: 'back', half: 1,
-    plan: null, swing: null, swingAnim: 1, swingSide: 1, serveAnim: -1, runPhase: rnd(0, 6),
+    plan: null, swing: null, swingSide: 1, yaw: team === 0 ? Math.PI : 0,
     control: 'touch', racket: null, hist: [], profile: null, lastSwingId: -1, hand: 'right',
   };
 });
@@ -236,7 +233,10 @@ function award(team, call) {
   const youWon = team === 0;
   if (!G.demo) sfx.point(youWon);
   if (call) callout(call, youWon ? TEAM_COLORS[0] : TEAM_COLORS[1]);
-  players.forEach((p) => { if (p.phone) haptic(p, p.team === team ? 'win' : 'lose'); });
+  players.forEach((p) => {
+    if (p.phone) haptic(p, p.team === team ? 'win' : 'lose');
+    setTimeout(() => p.ch.play(p.team === team ? (Math.random() < 0.5 ? 'clench' : 'celebrate') : (Math.random() < 0.5 ? 'shakeHead' : 'dejected'), 0), 350);
+  });
   if (gameWon) {
     G.games[team]++;
     G.pts = [0, 0];
@@ -282,7 +282,7 @@ function setupServe() {
   receiver.pos.set(box * 2.7, 0, rs * (C.HL - 0.2));
   rpart.pos.set(-box * 2.4, 0, rs * 5.8);
   receiver.half = box; rpart.half = -box;
-  players.forEach((p) => { p.vel.set(0, 0, 0); p.plan = null; p.swing = null; p.serveAnim = -1; });
+  players.forEach((p) => { p.vel.set(0, 0, 0); p.plan = null; p.swing = null; p.ch.setBase(p === s ? 'serveReady' : 'ready'); });
   G.serveBox = box;
   G.phase = 'serve';
   G.timer = 0;
@@ -306,8 +306,8 @@ function setHint(t) {
 
 // ---------- Serving ----------
 function holdBallAt(s) {
-  const fx = s.ch.offArm.getWorldPosition(new THREE.Vector3());
-  ball.pos.set(fx.x, 1.25, fx.z - sideOf(s.team) * 0.25);
+  const fx = s.ch.leftHand(new THREE.Vector3());
+  ball.pos.set(fx.x, Math.max(0.9, fx.y), fx.z - sideOf(s.team) * 0.12);
 }
 function toss(s) {
   if (G.phase !== 'serve') return;
@@ -315,16 +315,16 @@ function toss(s) {
   G.timer = 0;
   G.toss0 = G.time;
   ball.held = false;
-  ball.vel.set(0, 5.4, 0);
+  ball.vel.set(0, 6.2, 0);
   ball.spin = 0;
-  s.serveAnim = 0;
+  s.ch.setBase('serveToss');
   sfx.blip();
   if (s.phone) haptic(s, 'join');
 }
 function hitServe(s, power, { spin = 0, aim = 0 } = {}) {
   const sg = sideOf(s.team);
   // Contact quality: best near the top of the toss.
-  const q = clamp((ball.pos.y - 1.9) / 0.9, 0.25, 1);
+  const q = clamp((ball.pos.y - 2.2) / 0.8, 0.25, 1);
   const err = (1 - q) * 1.6 + Math.max(0, power - 0.85) * 2.5;
   const box = G.serveBox;
   const tx = box * clamp(1.6 + aim * 1.2, 0.4, C.SHW - 0.35) + rnd(-1, 1) * err * 0.8;
@@ -334,7 +334,8 @@ function hitServe(s, power, { spin = 0, aim = 0 } = {}) {
   ball.spin = spin;
   ball.live = true; ball.serve = true; ball.netTouch = false; ball.bounces = 0;
   ball.lastTeam = s.team; ball.lastHitter = s.i;
-  s.serveAnim = 0.55;
+  s.ch.setBase('ready');
+  s.ch.play('serve', s.ch.contactOf('serve'));
   G.phase = 'rally';
   G.shots = 0;
   setHint('');
@@ -425,7 +426,7 @@ function aiHit(p) {
   const L = AI_LEVELS[G.demo ? 'medium' : settings.level];
   // Long rallies make the CPU shakier, so points always end.
   const tired = 1 + G.shots * 0.12;
-  if (Math.random() < L.miss * tired * (p.plan.volley ? 1.5 : 1)) { p.plan.done = true; p.swingAnim = 0; return; }
+  if (Math.random() < L.miss * tired * (p.plan.volley ? 1.5 : 1)) { p.plan.done = true; return; }
   const opp = players.filter((o) => o.team !== p.team);
   const gapX = -Math.sign(opp.reduce((a, o) => a + o.pos.x, 0) || rnd(-1, 1));
   const aim = clamp(gapX * rnd(0.3, 0.9) + rnd(-0.3, 0.3), -0.95, 0.95);
@@ -434,7 +435,19 @@ function aiHit(p) {
     power: rnd(...L.power), aim, spin: Math.random() < 0.5 ? rnd(0.2, 0.7) : (Math.random() < 0.3 ? -0.5 : 0),
     lob, quality: clamp(1 - L.err * tired * rnd(0, 0.35), 0.2, 1),
   });
-  p.swingAnim = 0;
+}
+
+// Which stroke animation fits a planned contact.
+function strokeOf(p, plan) {
+  if (plan && plan.contact.y > 2.1) return 'smash';
+  const fore = plan ? plan.fore : true;
+  if (plan && plan.volley) return fore ? 'volleyFh' : 'volleyBh';
+  return fore ? 'forehand' : 'backhand';
+}
+// Snap into the stroke at its contact frame, so the racket meets the ball on the hit.
+function strokeAtContact(p, plan) {
+  const name = strokeOf(p, plan);
+  p.ch.play(name, p.ch.contactOf(name));
 }
 
 // ---------- Human input ----------
@@ -448,13 +461,13 @@ function onSwing(i, power, extra = {}) {
     return;
   }
   if (G.server === i && G.phase === 'toss') {
-    if (p.control !== 'racket' && ball.pos.y > 1.7 && G.timer > 0.2) {
+    if (p.control !== 'racket' && ball.pos.y > 2.0 && G.timer > 0.2) {
       const spin = racketSpin(p);
       hitServe(p, power, { spin: spin > 0.25 ? 0.8 : 0, aim: extra.aim || 0 });
     }
     return;
   }
-  p.swingAnim = 0;
+  if (!p.plan || p.plan.done) p.ch.play(strokeOf(p, null), 0);   // a swing at nothing: whiff
   sfx.whoosh(power);
   // Phone racket swings are read straight from the motion stream at contact (racketHit), like ping pong.
   if (p.control === 'racket') return;
@@ -488,7 +501,7 @@ function racketHit(p) {
   const quality = clamp(1 - Math.abs(dt - 0.03) / 0.4, 0.4, 1);
   hitBall(p, { power: clamp((best.fwd - thr) / (full - thr), 0.1, 1), aim: clamp(tim * pullDir * 0.9, -1, 1), spin, quality });
   if (!G.demo && Math.abs(dt - 0.03) < 0.05) popupAt('PERFECT', ball.pos, TEAM_COLORS[p.team], 'big');
-  p.swingAnim = 0;
+  strokeAtContact(p, pl);
 }
 
 // Upward racket-head motion during the swing means topspin, downward means slice.
@@ -519,6 +532,7 @@ function tryHumanHit(p) {
   const quality = clamp(1 - Math.abs(dt - SWEET) / 0.45, 0.35, 1);
   const call = Math.abs(dt - SWEET) < 0.05 ? 'PERFECT' : null;
   hitBall(p, { power: sw.power, aim: aimWorld, spin: sw.spin, lob: sw.lob, quality });
+  strokeAtContact(p, pl);
   if (call && !G.demo) popupAt(call, ball.pos, TEAM_COLORS[p.team], 'big');
   p.swing = null;
   return true;
@@ -561,7 +575,7 @@ function onBounce(pos, speed) {
 
 // ---------- FX ----------
 function hitFx(p, power, smash) {
-  const head = p.ch.racket.userData.head.getWorldPosition(new THREE.Vector3());
+  const head = p.ch.racketHead(new THREE.Vector3());
   const col = new THREE.Color(TEAM_COLORS[p.team]);
   particles.burst(ball.pos, col, { count: 10 + Math.round(power * 16), speed: 2 + power * 4, size: 0.05, life: 0.5 });
   rings.spawn(ball.pos.clone(), col, { from: 0.1, to: 0.9 + power, dur: 0.3, normalZ: 1 });
@@ -637,55 +651,30 @@ function updatePlayer(p, dt) {
       p.plan.done = true;
     }
   }
-  // AI starts its swing animation a moment before contact.
-  if (p.kind === 'ai' && p.plan && !p.plan.done && p.plan.t - G.time < 0.25 && p.swingAnim >= 1) p.swingAnim = 0;
+  // The CPU starts its stroke so the clip's contact frame lands on the hit.
+  if (p.kind === 'ai' && p.plan && !p.plan.done && !p.plan.anim) {
+    const name = strokeOf(p, p.plan);
+    if (p.plan.t - G.time <= p.ch.contactOf(name)) { p.plan.anim = true; p.ch.play(name, 0); }
+  }
 }
 
 function animatePlayer(p, dt) {
-  const ch = p.ch;
-  ch.group.position.copy(p.pos);
-  const face = p.team === 0 ? 0 : Math.PI;
-  ch.group.rotation.y = face;
+  p.ch.group.position.copy(p.pos);
+  // Face the net, or turn into a long run while chasing a ball. The model faces +z.
   const sp = Math.hypot(p.vel.x, p.vel.z);
-  const run = clamp(sp / 6, 0, 1);
-  p.runPhase += dt * (6 + sp * 2.2);
-  const s = Math.sin(p.runPhase);
-  ch.legs[0].rotation.x = s * 0.9 * run;
-  ch.legs[1].rotation.x = -s * 0.9 * run;
-  ch.body.position.y = 0.62 + Math.abs(Math.cos(p.runPhase)) * 0.05 * run;
-  ch.offArm.rotation.set(-s * 0.7 * run, 0, 0);
-  ch.body.rotation.set(0.12 * run, 0, 0);
-  // Ready position: racket held up in front.
-  ch.racketArm.rotation.set(-0.9, 0, -0.25 * ch.hs);
-  ch.racket.rotation.set(-0.9, 0, 0.5 * ch.hs);
-
-  // Ground-stroke swing: twist the body and sweep the racket arm across.
-  if (p.swingAnim < 1) {
-    p.swingAnim = Math.min(1, p.swingAnim + dt / 0.42);
-    const k = p.swingAnim;
-    const e = k < 0.35 ? -k / 0.35 : -1 + (k - 0.35) / 0.65 * 2;  // back, then through
-    const side = p.swingSide * ch.hs;
-    ch.body.rotation.y = -e * 0.9 * side;
-    ch.racketArm.rotation.set(-1.25, 0, 0);
-    ch.racketArm.rotation.z = (0.6 + e * 0.3) * ch.hs * (p.swingSide > 0 ? 1 : -0.4);
-    ch.racket.rotation.set(-1.0, 0, 0);
+  const net = p.team === 0 ? Math.PI : 0;
+  let want = net;
+  if (sp > 3 && !p.ch.busy() && G.phase === 'rally') {
+    const runYaw = Math.atan2(p.vel.x, p.vel.z);
+    let d = runYaw - net;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    want = net + clamp(d, -1.2, 1.2) * 0.8;
   }
-  // Serve: toss arm up, racket behind the head, then over the top.
-  if (p.serveAnim >= 0) {
-    p.serveAnim += dt;
-    const k = p.serveAnim;
-    if (k < 0.55) {
-      ch.offArm.rotation.set(-2.9 * Math.min(1, k / 0.25), 0, 0);
-      ch.racketArm.rotation.set(-2.8 * Math.min(1, k / 0.4), 0, 0);
-      ch.racket.rotation.set(-1.4, 0, 0);
-    } else if (k < 0.85) {
-      const u = (k - 0.55) / 0.3;
-      ch.offArm.rotation.set(-2.9 + u * 2.4, 0, 0);
-      ch.racketArm.rotation.set(-3.4 + u * 3.0, 0, 0);
-      ch.racket.rotation.set(-0.3, 0, 0);
-    } else if (G.phase !== 'toss') p.serveAnim = -1;
-    else ch.racketArm.rotation.set(-2.8, 0, 0);
-  }
+  let d = want - p.yaw;
+  d = Math.atan2(Math.sin(d), Math.cos(d));
+  p.yaw += d * Math.min(1, dt * 10);
+  p.ch.group.rotation.y = p.yaw;
+  p.ch.update(dt, sp);
 }
 
 // Serving in racket mode: a forward swing after the toss went up hits the serve.
@@ -695,8 +684,7 @@ function serveSwing(s) {
   let best = null;
   for (const h of s.hist) if (h.gt > G.toss0 + 0.25 && now - h.t < 150 && (!best || h.fwd > best.fwd)) best = h;
   if (!best || best.fwd <= thr) return false;
-  const up = best.up;
-  hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: up > 0.8 ? 0.8 : 0 });
+  hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0 });
   return true;
 }
 
@@ -716,18 +704,18 @@ function update(dt) {
     }
   } else if (G.phase === 'toss') {
     stepBall(ball, dt);
-    if (s.kind === 'ai' && ball.vel.y < 0 && ball.pos.y < 2.7) {
+    if (s.kind === 'ai' && ball.vel.y < 0 && ball.pos.y < 2.95) {
       const L = AI_LEVELS[G.demo ? 'medium' : settings.level];
       const fault = Math.random() < (G.second ? L.fault * 0.4 : L.fault);
       hitServe(s, G.second ? rnd(0.3, 0.55) : rnd(0.55, 0.9), { spin: G.second ? 0.8 : 0, aim: rnd(-1, 1) * (fault ? 3 : 0.8) });
-    } else if (s.kind === 'human' && s.control === 'racket' && ball.pos.y > 1.7 && G.timer > 0.3 && serveSwing(s)) {
+    } else if (s.kind === 'human' && s.control === 'racket' && ball.pos.y > 2.0 && G.timer > 0.3 && serveSwing(s)) {
       // served from the motion stream
     } else if (ball.pos.y <= C.R + 0.01 && ball.vel.y <= 0.01) {
       // Dropped the toss: just take it again.
       if (!G.demo && s.kind === 'human') setHint('Missed it: flick up to toss again, then swing');
       G.phase = 'serve';
       G.timer = 0;
-      s.serveAnim = -1;
+      s.ch.setBase('serveReady');
     }
   } else if (G.phase === 'rally' || G.phase === 'dead') {
     const n = 4;
@@ -777,20 +765,20 @@ function updateCamera(dt) {
 // ---------- Network ----------
 const pingMs = [0, 0];
 const host = new Host({
+  roomKey: 'vxpp-room-tennis',
   onStatus(state, info) {
     const el = $('netStatus');
     if (state === 'ready') { el.textContent = `Room ${info}`; el.className = 'pill ok'; renderQR(1); renderQR(2); }
     else if (state === 'error') { el.textContent = info; el.className = 'pill bad'; }
     else { el.textContent = 'Connecting to pairing server…'; el.className = 'pill'; }
   },
-  onJoin(slot) {
+  onJoin(slot, rejoin) {
     const p = players[slot - 1];
     if (!p) return;
     p.phone = true;
     $(`p${slot}State`).textContent = 'Phone connected';
     $(`p${slot}Card`).classList.add('joined');
-    sfx.join();
-    callout(`P${slot} CONNECTED`, TEAM_COLORS[0], 'big');
+    if (!rejoin) { sfx.join(); callout(`P${slot} CONNECTED`, TEAM_COLORS[0], 'big'); }
     sendState();
   },
   onLeave(slot) {
@@ -821,9 +809,10 @@ const host = new Host({
       const parts = players.slice(0, 2).map((q, k) => (q.phone && pingMs[k] ? `P${k + 1} ${Math.round(pingMs[k])} ms` : null)).filter(Boolean);
       $('ping').textContent = parts.length ? parts.join(' · ') : 'No phone';
     } else if (m.t === 'prof') {
+      const changed = JSON.stringify(p.profile) !== JSON.stringify(m);
       p.profile = m;
       p.hand = m.hand === 'left' ? 'left' : 'right';
-      callout(`P${slot} SWING CALIBRATED`, TEAM_COLORS[0], 'big');
+      if (changed && G.demo) callout(`P${slot} SWING CALIBRATED`, TEAM_COLORS[0], 'big');
     } else if (m.t === 'start') {
       if (G.demo || G.phase === 'over') startMatch();
     }
