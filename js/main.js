@@ -359,7 +359,7 @@ function performHit(p, { power, dir = 0, quality = 1, auto = false, targetX = nu
 function hitFx(p, power, smash) {
   const pl = players[p];
   const c = pl.color.clone().multiplyScalar(3);
-  G.hitStop = 0.035 + power * 0.05 + (smash ? 0.1 : 0);
+  G.hitStop = smash ? 0.045 : 0.012 + power * 0.012; // short, so it reads as impact rather than lag
   shake.add(0.16 + power * 0.22 + (smash ? 0.45 : 0));
   G.chroma = Math.max(G.chroma, 0.004 + power * 0.008 + (smash ? 0.025 : 0));
   G.fovPunch = Math.max(G.fovPunch, 1.5 + power * 2.5 + (smash ? 6 : 0));
@@ -369,7 +369,7 @@ function hitFx(p, power, smash) {
   sfx.hit(power, smash);
   haptic(p, smash ? 'smash' : 'hit', power);
   if (smash) {
-    G.timeScale = 0.3;
+    G.timeScale = 0.7;
     popup3D('SMASH!', ball.pos, pl.color.getHex(), 'big', p);
     flash(0.35);
   }
