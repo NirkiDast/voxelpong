@@ -75,12 +75,14 @@ export function classify(vec, models, names) {
 export const TENNIS_SHOTS = [
   { key: 'fhFlat', title: 'FLAT FOREHAND', text: 'A clean, hard forehand straight through the ball.' },
   { key: 'fhTop', title: 'TOPSPIN FOREHAND', text: 'Forehand brushing up the back of the ball: start low, finish high.' },
+  { key: 'fhSlice', title: 'FOREHAND SLICE', text: 'Forehand from high to low with an open racket face, cutting under the ball.' },
   { key: 'bhFlat', title: 'FLAT BACKHAND', text: 'A clean, hard backhand straight through the ball.' },
   { key: 'bhTop', title: 'TOPSPIN BACKHAND', text: 'Backhand brushing up: start low, finish high.' },
-  { key: 'slice', title: 'SLICE', text: 'High to low with an open racket face, cutting under the ball.' },
+  { key: 'bhSlice', title: 'BACKHAND SLICE', text: 'Backhand from high to low with an open racket face, cutting under the ball.' },
   { key: 'lob', title: 'LOB', text: 'Lift the ball high over the net: open face, swing upward.' },
   { key: 'drop', title: 'DROP SHOT', text: 'A soft, short touch with an open face, as if to just clear the net.' },
   { key: 'toss', title: 'SERVE TOSS', text: 'The toss before a serve: lift the phone up smoothly, like releasing the ball.' },
-  { key: 'srvFlat', title: 'FLAT SERVE', text: 'A full, fast serve straight through the ball.' },
-  { key: 'srvSpin', title: 'SPIN SERVE', text: 'A kick serve: brush up and across the ball, finishing out to the side.' },
+  { key: 'srvFlat', title: 'FLAT SERVE', text: 'Your full service motion, hitting hard and straight through the ball. Hold from the take-back to the finish.' },
+  { key: 'srvSpin', title: 'SPIN (SLICE) SERVE', text: 'Full service motion brushing across the side of the ball, so it curves away. Hold from the take-back to the finish.' },
+  { key: 'srvKick', title: 'KICK SERVE', text: 'Full service motion brushing up the back of the ball, low to high, finishing up and over. Hold from the take-back to the finish.' },
 ];

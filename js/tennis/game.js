@@ -148,7 +148,7 @@ const players = [0, 1, 2, 3].map((i) => {
 });
 
 const ball = {
-  pos: new THREE.Vector3(0, 1, 0), vel: new THREE.Vector3(), spin: 0,
+  pos: new THREE.Vector3(0, 1, 0), vel: new THREE.Vector3(), spin: 0, side: 0, kick: 0,
   live: false, serve: false, netTouch: false, lastTeam: -1, lastHitter: -1, bounces: 0, held: true,
 };
 
@@ -167,6 +167,7 @@ function stepBall(b, dt) {
   const g = TUNE.gravity + b.spin * 4.0;
   const pz = b.pos.z;
   b.vel.y -= g * dt;
+  if (b.side) b.vel.x += b.side * dt;           // sidespin curve (slice serve)
   b.vel.multiplyScalar(1 - DRAG * dt);
   b.pos.addScaledVector(b.vel, dt);
   if (Math.sign(pz) !== Math.sign(b.pos.z) && pz !== 0 && Math.abs(b.pos.x) < C.HW + 0.5 && b.pos.y < netHeightAt(b.pos.x) + C.R) {
@@ -183,6 +184,8 @@ function stepBall(b, dt) {
     const f = slice ? 0.72 : top ? 0.9 : 0.82;
     b.vel.x *= f;
     b.vel.z *= f;
+    if (b.kick) { b.vel.y *= 1.3; b.vel.x += b.kick; b.kick = 0; }   // kick serve: jumps up and away
+    if (b.side) { b.vel.x += b.side * 0.12; b.side = 0; }            // slice serve skids on
     b.spin *= 0.4;
     return 'bounce';
   }
@@ -190,7 +193,7 @@ function stepBall(b, dt) {
 }
 
 function predict(maxT = 4) {
-  const b = { pos: ball.pos.clone(), vel: ball.vel.clone(), spin: ball.spin };
+  const b = { pos: ball.pos.clone(), vel: ball.vel.clone(), spin: ball.spin, side: ball.side, kick: ball.kick };
   const out = [];
   const h = 1 / 120;
   let bounces = 0, firstBounce = null;
@@ -311,7 +314,7 @@ function setupServe() {
   G.serveBox = box;
   G.phase = 'serve';
   G.timer = 0;
-  ball.live = false; ball.serve = false; ball.held = true; ball.netTouch = false; ball.bounces = 0; ball.spin = 0;
+  ball.live = false; ball.serve = false; ball.held = true; ball.netTouch = false; ball.bounces = 0; ball.spin = 0; ball.side = 0; ball.kick = 0;
   ball.vel.set(0, 0, 0);
   trail.clear();
   renderScore();
@@ -339,6 +342,7 @@ function toss(s) {
   G.phase = 'toss';
   G.timer = 0;
   G.toss0 = G.time;
+  G.tossPath = [];
   ball.held = false;
   ball.vel.set(0, Math.sqrt(2 * TUNE.gravity * 1.95), 0);  // same toss height whatever the gravity
   ball.spin = 0;
@@ -346,17 +350,22 @@ function toss(s) {
   sfx.blip();
   if (s.phone) haptic(s, 'join');
 }
-function hitServe(s, power, { spin = 0, aim = 0 } = {}) {
+function hitServe(s, power, { spin = 0, aim = 0, kind = null, contactY = ball.pos.y } = {}) {
   const sg = sideOf(s.team);
   // Contact quality: best near the top of the toss.
-  const q = clamp((ball.pos.y - 2.2) / 0.8, 0.25, 1);
+  const q = clamp((contactY - 2.2) / 0.8, 0.25, 1);
   const err = (1 - q) * 1.6 + Math.max(0, power - 0.85) * 2.5;
   const box = G.serveBox;
   const tx = box * clamp(1.6 + aim * 1.2, 0.4, C.SHW - 0.35) + rnd(-1, 1) * err * 0.8;
   const tz = -sg * (C.SVC - 0.8 - (1 - power) * 1.6) - sg * rnd(-0.4, 1) * err;
   const T = lerp(TUNE.serveSlow, TUNE.serveFast, power) * (spin > 0 ? 1.12 : 1);
-  ball.vel.copy(shotVelocity(ball.pos, tx, tz, T, spin, 0.1 + q * 0.25 - err * 0.12));
+  // Slice ("spin") serve curves toward the server's off side; a kick serve jumps the other way off the bounce.
+  const away = -sg * (s.hand === 'left' ? -1 : 1);
+  const side = kind === 'spin' ? away * 7 : 0;
+  ball.vel.copy(shotVelocity(ball.pos, tx - 0.5 * side * T * T, tz, T, spin, 0.1 + q * 0.25 - err * 0.12));
   ball.spin = spin;
+  ball.side = side;
+  ball.kick = kind === 'kick' ? -away * 2.2 : 0;
   ball.live = true; ball.serve = true; ball.netTouch = false; ball.bounces = 0;
   ball.lastTeam = s.team; ball.lastHitter = s.i;
   s.ch.setBase('ready');
@@ -444,6 +453,7 @@ function hitBall(p, { power, aim = 0, spin = 0, lob = false, drop = false, quali
   }
   ball.vel.copy(shotVelocity(ball.pos, tx, tz, T, lob ? 0 : spin, drop ? 0.12 : 0.25 + quality * 0.2 - err * 0.15));
   ball.spin = lob ? 0 : spin;
+  ball.side = 0; ball.kick = 0;
   ball.live = true; ball.serve = false; ball.bounces = 0; ball.netTouch = false;
   ball.lastTeam = p.team; ball.lastHitter = p.i;
   G.shots++;
@@ -549,10 +559,12 @@ function racketHit(p) {
 }
 
 // ---------- Phase 2: calibrated shot recognition ----------
-const GROUND_SHOTS = ['fhFlat', 'fhTop', 'bhFlat', 'bhTop', 'slice', 'lob', 'drop'];
-const SERVE_SHOTS = ['srvFlat', 'srvSpin'];
-const SHOT_TYPE = { fhFlat: 'flat', bhFlat: 'flat', fhTop: 'top', bhTop: 'top', slice: 'slice', lob: 'lob', drop: 'drop', srvFlat: 'flat', srvSpin: 'spin' };
-const SHOT_LABEL = { flat: 'FLAT', top: 'TOPSPIN', slice: 'SLICE', lob: 'LOB', drop: 'DROP SHOT', spin: 'SPIN SERVE' };
+// 'slice' is the older single slice calibration, still used if that's all a phone has.
+const GROUND_SHOTS = ['fhFlat', 'fhTop', 'fhSlice', 'bhFlat', 'bhTop', 'bhSlice', 'slice', 'lob', 'drop'];
+const SERVE_SHOTS = ['srvFlat', 'srvSpin', 'srvKick'];
+const SHOT_TYPE = { fhFlat: 'flat', bhFlat: 'flat', fhTop: 'top', bhTop: 'top', fhSlice: 'slice', bhSlice: 'slice', slice: 'slice', lob: 'lob', drop: 'drop', srvFlat: 'flat', srvSpin: 'spin', srvKick: 'kick' };
+const SHOT_LABEL = { flat: 'FLAT', top: 'TOPSPIN', slice: 'SLICE', lob: 'LOB', drop: 'DROP SHOT' };
+const SERVE_LABEL = { flat: 'FLAT SERVE', spin: 'SPIN SERVE', kick: 'KICK SERVE' };
 // The motion around this swing's peak, matched against the player's calibrated shots.
 function recogniseShot(p, best, names) {
   if (!p.shots || !best) return null;
@@ -750,18 +762,31 @@ function animatePlayer(p, dt) {
 }
 
 // Serving in racket mode: a forward swing after the toss went up hits the serve.
+// It waits until the swing has clearly peaked and slowed, so the take-back and racket drop
+// before a real serve don't fire it early, and so the whole motion is there to recognise.
 function serveSwing(s) {
-  const thr = s.profile?.thr ?? 1.0, full = s.profile?.full ?? 5.5;
+  let thr = s.profile?.thr ?? 1.0;
+  const full = s.profile?.full ?? 5.5;
+  const cal = SERVE_SHOTS.map((k) => s.shots?.[k]?.peak).filter(Boolean);
+  if (cal.length) thr = Math.max(thr, Math.min(...cal) * 0.55);  // a serve is a big swing: ignore small moves
   const now = performance.now();
   let best = null;
-  for (const h of s.hist) if (h.gt > G.toss0 + 0.25 && now - h.t < 150 && (!best || h.fwd > best.fwd)) best = h;
+  for (const h of s.hist) if (h.gt > G.toss0 + 0.25 && now - h.t < 400 && (!best || h.fwd > best.fwd)) best = h;
   if (!best || best.fwd <= thr) return false;
+  const last = s.hist[s.hist.length - 1];
+  const done = now - best.t > 140 || (last !== best && last.fwd < best.fwd * 0.45);
+  if (!done && ball.pos.y > 0.9) return false;      // still swinging: let it finish
+  // Judge the contact by where the ball was when the swing peaked, not now.
+  let contactY = ball.pos.y;
+  for (const tp of G.tossPath || []) if (tp.gt <= best.gt) contactY = tp.y;
+  if (contactY < 1.2) return false;   // swung before the toss really went up
   const shot = recogniseShot(s, best, SERVE_SHOTS);
   if (shot) {
-    const spin = shot.name === 'srvSpin' ? 0.8 : 0;
-    hitServe(s, clamp(shot.speed / shot.model.peak * 0.9, 0.1, 1), { spin });
-    if (!G.demo) popupAt(spin ? 'SPIN SERVE' : 'FLAT SERVE', ball.pos, 0xffd166, 'big');
-  } else hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0 });
+    const kind = SHOT_TYPE[shot.name];
+    const spin = kind === 'kick' ? 1 : kind === 'spin' ? 0.3 : 0;
+    hitServe(s, clamp(shot.speed / shot.model.peak * 0.9, 0.1, 1), { spin, kind, contactY });
+    if (!G.demo) popupAt(SERVE_LABEL[kind], ball.pos, 0xffd166, 'big');
+  } else hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0, contactY });
   return true;
 }
 
@@ -782,12 +807,15 @@ function update(dt) {
       if (s.hist.some((h) => now - h.t < 120 && h.up > tossUp && h.up > Math.abs(h.fwd) * 1.3)) toss(s);
     }
   } else if (G.phase === 'toss') {
-    stepBall(ball, dt);
+    // A human's toss hangs a little longer, so there's time for a full service motion.
+    stepBall(ball, s.kind === 'human' ? dt * 0.72 : dt);
+    (G.tossPath ||= []).push({ gt: G.time, y: ball.pos.y });
     if (s.kind === 'ai' && ball.vel.y < 0 && ball.pos.y < 2.9) {
       const L = AI_LEVELS[G.demo ? 'medium' : settings.level];
       const fault = Math.random() < (G.second ? L.fault * 0.4 : L.fault);
-      hitServe(s, G.second ? rnd(0.3, 0.55) : rnd(0.55, 0.9), { spin: G.second ? 0.8 : 0, aim: rnd(-1, 1) * (fault ? 3 : 0.8) });
-    } else if (s.kind === 'human' && s.control === 'racket' && ball.pos.y > 2.0 && G.timer > 0.3 && serveSwing(s)) {
+      const kind = G.second ? 'kick' : Math.random() < 0.3 ? 'spin' : null;
+      hitServe(s, G.second ? rnd(0.3, 0.55) : rnd(0.55, 0.9), { spin: kind === 'kick' ? 1 : kind === 'spin' ? 0.3 : 0, kind, aim: rnd(-1, 1) * (fault ? 3 : 0.8) });
+    } else if (s.kind === 'human' && s.control === 'racket' && ball.pos.y > 0.9 && G.timer > 0.3 && serveSwing(s)) {
       // served from the motion stream
     } else if (ball.pos.y <= C.R + 0.01 && ball.vel.y <= 0.01) {
       // Dropped the toss: just take it again.

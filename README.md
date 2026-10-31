@@ -54,7 +54,7 @@ Optional: `?signal=host:port` points both pages at a self-hosted PeerJS server i
 **Voxel Tennis (`tennis.html`)**
 - Second game on the same site: neon indoor wooden court, chibi voxel players with glowing rackets, 1v1 singles by default, 2v2 doubles selectable, tennis scoring.
 - Players run to the ball by themselves. Swing timing aims (early = cross-court, late = down the line), swing speed sets pace, swinging up/down adds topspin/slice, face tilted up lobs. Serve = flick the phone up to toss, then swing.
-- Phase 2 (done): on the phone tap "Calibrate tennis shots" and record 10 shots 3 times each (flat/topspin forehand and backhand, slice, lob, drop shot, toss, flat and spin serves). The game matches each live swing to the nearest calibrated shot (`js/shotfeat.js`) and plays it.
+- Phase 2 (done): on the phone tap "Calibrate tennis shots" and record 12 shots 3 times each (flat/topspin/slice forehand and backhand, lob, drop shot, toss, flat, spin and kick serves). The game matches each live swing to the nearest calibrated shot (`js/shotfeat.js`) and plays it.
 
 **Phase 3: depth and polish**
 - Spin (topspin and backspin from swing direction, curve with the Magnus effect) and better swing classification (forehand, backhand, smash)
