@@ -29,7 +29,7 @@ const sideOf = (team) => (team === 0 ? 1 : -1);   // team 0 plays at z > 0
 // Tunables: adjustable live from the ⚙ panel (top right) and remembered in this browser.
 const TUNE_DEFAULTS = {
   camHeight: 8.2, camBack: 12.5, camLookY: 0.4, camLookZ: -3.2, fov: 46, camFollow: 0.3, autoZoom: 1,
-  gameSpeed: 1.0, gravity: 12.5, shotMin: 18, shotMax: 34, serveFast: 0.5, serveSlow: 0.9, lobTime: 1.5,
+  gameSpeed: 1.0, gravity: 12.5, shotMin: 18, shotMax: 34, serveFast: 0.5, serveSlow: 0.9, servePerfect: 0.12, lobTime: 1.5,
   bounce: 0.7, runSpeed: 8.5,
 };
 const TUNE_INFO = {
@@ -39,7 +39,8 @@ const TUNE_INFO = {
   autoZoom: [0, 2, 0.05, 'Auto zoom-out strength'], gameSpeed: [0.5, 1.5, 0.01, 'Game speed'],
   gravity: [6, 20, 0.1, 'Gravity (less = floatier)'], shotMin: [8, 30, 0.5, 'Soft shot speed (m/s)'],
   shotMax: [15, 50, 0.5, 'Hard shot speed (m/s)'], serveFast: [0.3, 1, 0.01, 'Fast serve flight (s)'],
-  serveSlow: [0.5, 1.6, 0.01, 'Soft serve flight (s)'], lobTime: [0.9, 2.5, 0.05, 'Lob flight (s)'],
+  serveSlow: [0.5, 1.6, 0.01, 'Soft serve flight (s)'],
+  servePerfect: [0.03, 0.5, 0.01, 'Perfect serve window (m from toss top)'], lobTime: [0.9, 2.5, 0.05, 'Lob flight (s)'],
   bounce: [0.4, 0.9, 0.01, 'Bounce height'], runSpeed: [4, 12, 0.1, 'Your run speed'],
 };
 const TUNE = { ...TUNE_DEFAULTS };
@@ -345,20 +346,26 @@ function toss(s) {
   G.tossPath = [];
   ball.held = false;
   ball.vel.set(0, Math.sqrt(2 * TUNE.gravity * 1.95), 0);  // same toss height whatever the gravity
-  ball.spin = 0;
+  ball.spin = 0; ball.side = 0; ball.kick = 0;
+  // Where the toss will peak: hitting right there is a PERFECT serve.
+  const sim = { pos: ball.pos.clone(), vel: ball.vel.clone(), spin: 0 };
+  while (sim.vel.y > 0) stepBall(sim, 1 / 240);
+  G.tossApex = sim.pos.y;
+  G.apexShown = false;
   s.ch.setBase('serveToss');
   sfx.blip();
   if (s.phone) haptic(s, 'join');
 }
-function hitServe(s, power, { spin = 0, aim = 0, kind = null, contactY = ball.pos.y } = {}) {
+function hitServe(s, power, { spin = 0, aim = 0, kind = null, contactY = ball.pos.y, perfect = false } = {}) {
   const sg = sideOf(s.team);
-  // Contact quality: best near the top of the toss.
-  const q = clamp((contactY - 2.2) / 0.8, 0.25, 1);
-  const err = (1 - q) * 1.6 + Math.max(0, power - 0.85) * 2.5;
+  // Contact quality: best near the top of the toss. A perfect one is full power with no error.
+  if (perfect) power = 1;
+  const q = perfect ? 1 : clamp((contactY - 2.2) / 0.8, 0.25, 1);
+  const err = perfect ? 0 : (1 - q) * 1.6 + Math.max(0, power - 0.85) * 2.5;
   const box = G.serveBox;
   const tx = box * clamp(1.6 + aim * 1.2, 0.4, C.SHW - 0.35) + rnd(-1, 1) * err * 0.8;
   const tz = -sg * (C.SVC - 0.8 - (1 - power) * 1.6) - sg * rnd(-0.4, 1) * err;
-  const T = lerp(TUNE.serveSlow, TUNE.serveFast, power) * (spin > 0 ? 1.12 : 1);
+  const T = lerp(TUNE.serveSlow, TUNE.serveFast, power) * (spin > 0 ? 1.12 : 1) * (perfect ? 0.8 : 1);
   // Slice ("spin") serve curves toward the server's off side; a kick serve jumps the other way off the bounce.
   const away = -sg * (s.hand === 'left' ? -1 : 1);
   const side = kind === 'spin' ? away * 7 : 0;
@@ -373,7 +380,12 @@ function hitServe(s, power, { spin = 0, aim = 0, kind = null, contactY = ball.po
   G.phase = 'rally';
   G.shots = 0;
   setHint('');
-  hitFx(s, power, power > 0.8);
+  hitFx(s, power, perfect || power > 0.8);
+  if (perfect && !G.demo) {
+    popupAt('PERFECT SERVE!', ball.pos, 0xfff27a, 'big');
+    if (s.phone) haptic(s, 'smash');
+    G.hitStop = 0.1;
+  }
   planReceivers();
   sendState();
 }
@@ -780,13 +792,14 @@ function serveSwing(s) {
   let contactY = ball.pos.y;
   for (const tp of G.tossPath || []) if (tp.gt <= best.gt) contactY = tp.y;
   if (contactY < 1.2) return false;   // swung before the toss really went up
+  const perfect = Math.abs(contactY - (G.tossApex ?? 9)) < TUNE.servePerfect;
   const shot = recogniseShot(s, best, SERVE_SHOTS);
   if (shot) {
     const kind = SHOT_TYPE[shot.name];
     const spin = kind === 'kick' ? 1 : kind === 'spin' ? 0.3 : 0;
-    hitServe(s, clamp(shot.speed / shot.model.peak * 0.9, 0.1, 1), { spin, kind, contactY });
-    if (!G.demo) popupAt(SERVE_LABEL[kind], ball.pos, 0xffd166, 'big');
-  } else hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0, contactY });
+    hitServe(s, clamp(shot.speed / shot.model.peak * 0.9, 0.1, 1), { spin, kind, contactY, perfect });
+    if (!G.demo) setTimeout(() => popupAt(SERVE_LABEL[kind], ball.pos, 0xffd166, 'big'), perfect ? 350 : 0);
+  } else hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0, contactY, perfect });
   return true;
 }
 
@@ -810,6 +823,11 @@ function update(dt) {
     // A human's toss hangs a little longer, so there's time for a full service motion.
     stepBall(ball, s.kind === 'human' ? dt * 0.72 : dt);
     (G.tossPath ||= []).push({ gt: G.time, y: ball.pos.y });
+    // A little flash at the top of a human toss: that's the PERFECT moment.
+    if (s.kind === 'human' && !G.apexShown && ball.vel.y <= 0) {
+      G.apexShown = true;
+      rings.spawn(ball.pos.clone(), new THREE.Color(0xfff27a), { from: 0.05, to: 0.5, dur: 0.25, normalZ: 1 });
+    }
     if (s.kind === 'ai' && ball.vel.y < 0 && ball.pos.y < 2.9) {
       const L = AI_LEVELS[G.demo ? 'medium' : settings.level];
       const fault = Math.random() < (G.second ? L.fault * 0.4 : L.fault);
