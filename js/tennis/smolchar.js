@@ -34,7 +34,7 @@ export function createSmolPlayer(i, teamColor) {
   rig.bones.racket.add(ring);
 
   const st = {
-    base: 'ready', baseT: 0, runK: 0,
+    base: 'ready', baseT: 0, runK: 0, runT: 0, sideK: 0, c: restPose(),
     shot: null, shotT: 0, shotFade: 0,
     pose: restPose(), a: restPose(), b: restPose(), s: restPose(),
   };
@@ -53,14 +53,19 @@ export function createSmolPlayer(i, teamColor) {
   }
   const contactOf = (name) => CLIPS[name]?.contact ?? 0;
 
-  function update(dt, speed) {
+  function update(dt, speed, side = 0) {
     st.baseT += dt;
-    // Base: blend ready and run by speed (or a serve loop).
-    const target = st.base === 'ready' ? Math.min(1, speed / 4.5) : 0;
-    st.runK += (target - st.runK) * Math.min(1, dt * 10);
+    // Base: blend ready with a run or a side-step by speed (or a serve loop). The gait has its own
+    // clock that speeds up smoothly, so changing speed never makes the legs jump.
+    const target = st.base === 'ready' ? Math.min(1, speed / 3.5) : 0;
+    st.runK += (target - st.runK) * Math.min(1, dt * 8);
+    st.sideK += (side - st.sideK) * Math.min(1, dt * 6);
+    st.runT += dt * (0.75 + Math.min(speed, 9) * 0.09);
     if (st.base === 'ready') {
       sample(CLIPS.ready, st.baseT, st.a);
-      sample(CLIPS.run, st.baseT * (0.7 + speed * 0.12), st.b);
+      sample(CLIPS.run, st.runT, st.b);
+      sample(CLIPS.sidestep, st.runT * 0.75, st.c);
+      lerpPose(st.b, st.c, st.sideK, st.b);
       lerpPose(st.a, st.b, st.runK, st.pose);
     } else {
       sample(CLIPS[st.base], st.baseT, st.pose);

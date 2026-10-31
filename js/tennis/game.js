@@ -25,17 +25,33 @@ const rnd = (a, b) => a + Math.random() * (b - a);
 const sideOf = (team) => (team === 0 ? 1 : -1);   // team 0 plays at z > 0
 
 // ---------- Tuning ----------
-const GAME_SPEED = 0.82;      // whole simulation slightly slowed so swing timing is comfortable
-const GRAV = 9.8;
+// Tunables: adjustable live from the ⚙ panel (top right) and remembered in this browser.
+const TUNE_DEFAULTS = {
+  camHeight: 8.2, camBack: 12.5, camLookY: 0.4, camLookZ: -3.2, fov: 46, camFollow: 0.3, autoZoom: 1,
+  gameSpeed: 1.0, gravity: 12.5, shotMin: 18, shotMax: 34, serveFast: 0.5, serveSlow: 0.9, lobTime: 1.5,
+  bounce: 0.7, runSpeed: 8.5,
+};
+const TUNE_INFO = {
+  camHeight: [3, 16, 0.1, 'Camera height'], camBack: [6, 24, 0.1, 'Camera distance behind baseline'],
+  camLookY: [-2, 3, 0.1, 'Camera aim height'], camLookZ: [-12, 6, 0.1, 'Camera aim (court depth)'],
+  fov: [25, 75, 1, 'Field of view'], camFollow: [0, 1, 0.05, 'Camera follows sideways'],
+  autoZoom: [0, 2, 0.05, 'Auto zoom-out strength'], gameSpeed: [0.5, 1.5, 0.01, 'Game speed'],
+  gravity: [6, 20, 0.1, 'Gravity (less = floatier)'], shotMin: [8, 30, 0.5, 'Soft shot speed (m/s)'],
+  shotMax: [15, 50, 0.5, 'Hard shot speed (m/s)'], serveFast: [0.3, 1, 0.01, 'Fast serve flight (s)'],
+  serveSlow: [0.5, 1.6, 0.01, 'Soft serve flight (s)'], lobTime: [0.9, 2.5, 0.05, 'Lob flight (s)'],
+  bounce: [0.4, 0.9, 0.01, 'Bounce height'], runSpeed: [4, 12, 0.1, 'Your run speed'],
+};
+const TUNE = { ...TUNE_DEFAULTS };
+try { Object.assign(TUNE, JSON.parse(localStorage.getItem('vxpp-tennis-tune') || '{}')); } catch { /* ignore */ }
 const DRAG = 0.07;
 const SWEET = 0.12;           // seconds between the phone's swing trigger and an ideal contact
 const EARLY = 0.42, LATE = 0.1; // swing timing window around contact
 const REACH = 1.5;            // metres a player can stretch to reach the ball
 const SERVE_ORDER = [0, 2, 1, 3];
 const AI_LEVELS = {
-  easy:   { speed: 5.2, err: 1.6, miss: 0.12, power: [0.25, 0.55], fault: 0.25 },
-  medium: { speed: 6.2, err: 1.0, miss: 0.06, power: [0.35, 0.75], fault: 0.15 },
-  hard:   { speed: 7.2, err: 0.55, miss: 0.025, power: [0.5, 0.9], fault: 0.08 },
+  easy:   { speed: 6.4, err: 1.6, miss: 0.12, power: [0.25, 0.55], fault: 0.25 },
+  medium: { speed: 7.4, err: 1.0, miss: 0.06, power: [0.35, 0.75], fault: 0.15 },
+  hard:   { speed: 8.6, err: 0.55, miss: 0.025, power: [0.5, 0.9], fault: 0.08 },
 };
 const settings = { level: 'medium', games: 3 };
 
@@ -144,7 +160,7 @@ function netHeightAt(x) {
 }
 // Advances b by dt. Returns 'bounce', 'net' or null.
 function stepBall(b, dt) {
-  const g = GRAV + b.spin * 4.0;
+  const g = TUNE.gravity + b.spin * 4.0;
   const pz = b.pos.z;
   b.vel.y -= g * dt;
   b.vel.multiplyScalar(1 - DRAG * dt);
@@ -159,7 +175,7 @@ function stepBall(b, dt) {
   if (b.pos.y < C.R && b.vel.y < 0) {
     b.pos.y = C.R;
     const top = b.spin > 0, slice = b.spin < 0;
-    b.vel.y = -b.vel.y * (slice ? 0.55 : top ? 0.74 : 0.68);
+    b.vel.y = -b.vel.y * (TUNE.bounce + (slice ? -0.13 : top ? 0.06 : 0));
     const f = slice ? 0.72 : top ? 0.9 : 0.82;
     b.vel.x *= f;
     b.vel.z *= f;
@@ -184,7 +200,7 @@ function predict(maxT = 4) {
 
 // Velocity that sends a ball from p to land at (tx, tz) with flight time T, raised until it clears the net.
 function shotVelocity(p, tx, tz, T, spin, netMargin = 0.35) {
-  const g = GRAV + spin * 4.0;
+  const g = TUNE.gravity + spin * 4.0;
   const v = new THREE.Vector3();
   for (let k = 0; k < 30; k++) {
     const dragK = 1 + DRAG * T * 0.5;
@@ -315,7 +331,7 @@ function toss(s) {
   G.timer = 0;
   G.toss0 = G.time;
   ball.held = false;
-  ball.vel.set(0, 6.2, 0);
+  ball.vel.set(0, Math.sqrt(2 * TUNE.gravity * 1.95), 0);  // same toss height whatever the gravity
   ball.spin = 0;
   s.ch.setBase('serveToss');
   sfx.blip();
@@ -329,7 +345,7 @@ function hitServe(s, power, { spin = 0, aim = 0 } = {}) {
   const box = G.serveBox;
   const tx = box * clamp(1.6 + aim * 1.2, 0.4, C.SHW - 0.35) + rnd(-1, 1) * err * 0.8;
   const tz = -sg * (C.SVC - 0.8 - (1 - power) * 1.6) - sg * rnd(-0.4, 1) * err;
-  const T = lerp(1.15, 0.62, power) * (spin > 0 ? 1.12 : 1);
+  const T = lerp(TUNE.serveSlow, TUNE.serveFast, power) * (spin > 0 ? 1.12 : 1);
   ball.vel.copy(shotVelocity(ball.pos, tx, tz, T, spin, 0.1 + q * 0.25 - err * 0.12));
   ball.spin = spin;
   ball.live = true; ball.serve = true; ball.netTouch = false; ball.bounces = 0;
@@ -403,11 +419,11 @@ function hitBall(p, { power, aim = 0, spin = 0, lob = false, quality = 1 }) {
   let tz, T;
   if (lob) {
     tz = -sg * (C.HL - 1.6 - rnd(0, 1.5)) - sg * rnd(-0.6, 0.6) * err;
-    T = 1.9;
+    T = TUNE.lobTime;
   } else {
     tz = -sg * (C.HL - 1.4 - (1 - power) * 5.2) - sg * rnd(-0.5, 0.8) * err;
     const dist = Math.hypot(tx - ball.pos.x, tz - ball.pos.z);
-    T = dist / lerp(13, 27, power);
+    T = dist / lerp(TUNE.shotMin, TUNE.shotMax, power);
     if (spin > 0) T *= 1.12;
     if (spin < 0) T *= 1.15;
   }
@@ -619,21 +635,29 @@ function popupAt(text, pos, color, cls = '') {
 function homeOf(p) {
   const sg = sideOf(p.team);
   const z = p.role === 'front' ? sg * 4.2 : sg * (C.HL - 0.3);
-  const shift = ball.live ? clamp(ball.pos.x * 0.35, -1.5, 1.5) : 0;
+  p.homeShift = damp(p.homeShift || 0, ball.live ? clamp(ball.pos.x * 0.35, -1.5, 1.5) : 0, 2, 1 / 60);
+  const shift = Math.round(p.homeShift * 2) / 2;
   return new THREE.Vector3(p.half * 2.4 + shift, 0, z);
 }
 
 function updatePlayer(p, dt) {
   const L = AI_LEVELS[G.demo ? 'medium' : settings.level];
-  const speed = p.kind === 'human' ? 7.8 : L.speed;
-  let target;
+  const speed = p.kind === 'human' ? TUNE.runSpeed : L.speed;
+  let target, chasing = false;
   if (G.phase === 'serve' || G.phase === 'toss') target = p.pos.clone();
-  else if (p.plan && !p.plan.done) target = p.plan.stand;
+  else if (p.plan && !p.plan.done) { target = p.plan.stand; chasing = true; }
   else target = homeOf(p);
   const d = new THREE.Vector3(target.x - p.pos.x, 0, target.z - p.pos.z);
   const dist = d.length();
-  const want = dist > 0.05 ? d.multiplyScalar(Math.min(speed, dist * 6) / dist) : d.set(0, 0, 0);
-  p.vel.lerp(want, 1 - Math.exp(-10 * dt));
+  // Small drifts to a home spot are ignored, so players don't shuffle back and forth constantly.
+  const dead = chasing ? 0.05 : (p.settled ? 0.7 : 0.15);
+  p.settled = !chasing && dist < 0.7;
+  const want = dist > dead ? d.multiplyScalar(Math.min(speed, dist * 3.5) / dist) : d.set(0, 0, 0);
+  // Accelerate and brake smoothly (limited acceleration instead of snapping).
+  const dv = want.sub(p.vel);
+  const maxDv = (chasing ? 28 : 16) * dt;
+  if (dv.length() > maxDv) dv.setLength(maxDv);
+  p.vel.add(dv);
   p.pos.addScaledVector(p.vel, dt);
   // Stay on your own side of the net.
   const sg = sideOf(p.team);
@@ -660,21 +684,25 @@ function updatePlayer(p, dt) {
 
 function animatePlayer(p, dt) {
   p.ch.group.position.copy(p.pos);
-  // Face the net, or turn into a long run while chasing a ball. The model faces +z.
   const sp = Math.hypot(p.vel.x, p.vel.z);
   const net = p.team === 0 ? Math.PI : 0;
+  // Movement relative to facing the net: sideways shuffles use the side-step, long runs turn and run.
+  const fwdAxis = -sideOf(p.team);          // world z direction toward the net
+  const along = p.vel.z * fwdAxis, across = Math.abs(p.vel.x);
+  if (!p.turning && sp > 5.2 && !p.ch.busy() && G.phase === 'rally') p.turning = true;
+  if (p.turning && (sp < 3.5 || p.ch.busy() || G.phase !== 'rally')) p.turning = false;
   let want = net;
-  if (sp > 3 && !p.ch.busy() && G.phase === 'rally') {
-    const runYaw = Math.atan2(p.vel.x, p.vel.z);
-    let d = runYaw - net;
-    d = Math.atan2(Math.sin(d), Math.cos(d));
-    want = net + clamp(d, -1.2, 1.2) * 0.8;
+  if (p.turning) {
+    let dd = Math.atan2(p.vel.x, p.vel.z) - net;
+    dd = Math.atan2(Math.sin(dd), Math.cos(dd));
+    want = net + clamp(dd, -1.3, 1.3);
   }
   let d = want - p.yaw;
   d = Math.atan2(Math.sin(d), Math.cos(d));
-  p.yaw += d * Math.min(1, dt * 10);
+  p.yaw += d * Math.min(1, dt * 7);
   p.ch.group.rotation.y = p.yaw;
-  p.ch.update(dt, sp);
+  const side = p.turning ? 0 : clamp(across / Math.max(0.01, across + Math.abs(along)), 0, 1);
+  p.ch.update(dt, sp, side);
 }
 
 // Serving in racket mode: a forward swing after the toss went up hits the serve.
@@ -704,7 +732,7 @@ function update(dt) {
     }
   } else if (G.phase === 'toss') {
     stepBall(ball, dt);
-    if (s.kind === 'ai' && ball.vel.y < 0 && ball.pos.y < 2.95) {
+    if (s.kind === 'ai' && ball.vel.y < 0 && ball.pos.y < 2.9) {
       const L = AI_LEVELS[G.demo ? 'medium' : settings.level];
       const fault = Math.random() < (G.second ? L.fault * 0.4 : L.fault);
       hitServe(s, G.second ? rnd(0.3, 0.55) : rnd(0.55, 0.9), { spin: G.second ? 0.8 : 0, aim: rnd(-1, 1) * (fault ? 3 : 0.8) });
@@ -743,9 +771,18 @@ function updateCamera(dt) {
     tl = new THREE.Vector3(0, 0.5, 0);
   } else {
     const me = players[0];
-    const fx = clamp(me.pos.x * 0.3 + ball.pos.x * 0.15, -3, 3);
-    tp = new THREE.Vector3(fx, 6.2, C.HL + 9.5);
-    tl = new THREE.Vector3(fx * 0.4, 0.6, -3.5);
+    const fx = clamp((me.pos.x * 0.6 + ball.pos.x * 0.4) * TUNE.camFollow, -4, 4);
+    // Auto zoom: pull back (and up) when anyone, or the ball, gets wide or deep.
+    let wide = 0, deep = 0;
+    for (const q of players) {
+      wide = Math.max(wide, Math.abs(q.pos.x) - (C.HW + 0.5));
+      if (q.team === 0) deep = Math.max(deep, q.pos.z - (C.HL + 1.5));
+      else deep = Math.max(deep, -q.pos.z - (C.HL + 1.5));
+    }
+    if (ball.live) wide = Math.max(wide, Math.abs(ball.pos.x) - (C.HW + 0.5));
+    G.zoom = damp(G.zoom || 0, (Math.max(0, wide) * 1.4 + Math.max(0, deep) * 1.0) * TUNE.autoZoom, 1.5, dt);
+    tp = new THREE.Vector3(fx, TUNE.camHeight + G.zoom * 0.45, C.HL + TUNE.camBack + G.zoom);
+    tl = new THREE.Vector3(fx * 0.4, TUNE.camLookY, TUNE.camLookZ);
   }
   camPos.x = damp(camPos.x, tp.x, 3, dt); camPos.y = damp(camPos.y, tp.y, 3, dt); camPos.z = damp(camPos.z, tp.z, 3, dt);
   camLook.lerp(tl, 1 - Math.exp(-4 * dt));
@@ -754,7 +791,7 @@ function updateCamera(dt) {
   camera.lookAt(camLook);
   camera.rotation.z += shake.roll;
   G.fovPunch = damp(G.fovPunch, 0, 8, dt);
-  camera.fov = 48 + G.fovPunch;
+  camera.fov = (G.demo ? 48 : TUNE.fov) + G.fovPunch;
   camera.updateProjectionMatrix();
   bokeh.uniforms.focus.value = camera.position.distanceTo(ball.live || G.phase === 'toss' ? ball.pos : camLook);
   G.chroma = damp(G.chroma, 0, 6, dt);
@@ -840,7 +877,7 @@ function renderQR(slot) {
 // ---------- Mouse / keyboard (for playing without a phone) ----------
 addEventListener('mousedown', (e) => {
   enableAudio();
-  if (G.demo || e.target.closest('button, a, input, label')) return;
+  if (G.demo || e.target.closest('button, a, input, label, #tunePanel')) return;
   onSwing(0, e.button === 2 ? 0.55 : 0.75, { lob: e.button === 2, aim: 0 });
 });
 addEventListener('contextmenu', (e) => { if (!G.demo) e.preventDefault(); });
@@ -916,7 +953,7 @@ function frame(now) {
   let dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   if (G.hitStop > 0) { G.hitStop -= dt; dt *= 0.08; }
-  const sdt = dt * GAME_SPEED;
+  const sdt = dt * TUNE.gameSpeed;
   update(sdt);
   players.forEach((p) => animatePlayer(p, sdt));
   ballMesh.position.copy(ball.pos);
@@ -944,4 +981,29 @@ function frame(now) {
 toLobby();
 requestAnimationFrame(frame);
 
-window.__tennis = { G, ball, players, startMatch, toLobby, onSwing, settings, debug, predict };
+// ---------- Tuning panel (⚙ in the top right) ----------
+function buildTunePanel() {
+  const panel = $('tunePanel');
+  const rows = Object.keys(TUNE_DEFAULTS).map((k) => {
+    const [min, max, step, label] = TUNE_INFO[k];
+    return `<label><span>${label}</span><input type="range" min="${min}" max="${max}" step="${step}" data-k="${k}" value="${TUNE[k]}"><input type="number" min="${min}" max="${max}" step="${step}" data-n="${k}" value="${TUNE[k]}"></label>`;
+  }).join('');
+  panel.innerHTML = `<div class="tuneHead px">TUNING</div>${rows}<div class="tuneBtns"><button id="tuneCopy">Copy values</button><button id="tuneReset">Reset</button></div><div id="tuneMsg"></div>`;
+  const save = () => { try { localStorage.setItem('vxpp-tennis-tune', JSON.stringify(TUNE)); } catch { /* ignore */ } };
+  panel.querySelectorAll('input').forEach((inp) => inp.addEventListener('input', () => {
+    const k = inp.dataset.k || inp.dataset.n;
+    TUNE[k] = +inp.value;
+    panel.querySelectorAll(`[data-k="${k}"],[data-n="${k}"]`).forEach((o) => { if (o !== inp) o.value = inp.value; });
+    save();
+  }));
+  $('tuneCopy').addEventListener('click', async () => {
+    const txt = JSON.stringify(TUNE);
+    try { await navigator.clipboard.writeText(txt); $('tuneMsg').textContent = 'Copied! Paste it to Claude.'; }
+    catch { $('tuneMsg').textContent = txt; }
+  });
+  $('tuneReset').addEventListener('click', () => { Object.assign(TUNE, TUNE_DEFAULTS); save(); buildTunePanel(); });
+}
+buildTunePanel();
+$('tuneBtn').addEventListener('click', () => $('tunePanel').classList.toggle('hide'));
+
+window.__tennis = { G, ball, players, startMatch, toLobby, onSwing, settings, debug, predict, TUNE };

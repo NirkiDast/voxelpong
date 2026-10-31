@@ -85,6 +85,14 @@
   #scorebox .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px var(--gold); }
   #title { background: linear-gradient(90deg, #d8ff66, #fff 50%, var(--p2)); -webkit-background-clip: text; background-clip: text; }
   .popup.small { font-size: 10px; }
+  #tuneBtn { cursor: pointer; padding: 6px 10px; }
+  #tunePanel { position: fixed; top: 52px; right: 12px; z-index: 20; width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 70px); overflow-y: auto; background: rgba(10,7,30,0.92); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-size: 12px; }
+  #tunePanel label { display: grid; grid-template-columns: 1fr 110px 58px; gap: 8px; align-items: center; margin: 6px 0; }
+  #tunePanel input[type=number] { width: 58px; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+  .tuneHead { font-size: 11px; color: var(--p1); margin-bottom: 6px; }
+  .tuneBtns { display: flex; gap: 8px; margin-top: 10px; }
+  #tuneMsg { margin-top: 8px; color: #7dffb5; word-break: break-all; }
+  #hint { bottom: 3%; font-size: 12px; max-width: 90vw; text-align: center; }
   #switchGame { position: fixed; top: 12px; left: 12px; font-size: 12px; color: rgba(255,255,255,0.7); text-decoration: none; }
 </style>
 <script type="importmap">
@@ -152,7 +160,8 @@
   </div>
 </div>
 
-<div class="topbar"><span id="fps" class="pill"></span><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>
+<div class="topbar"><button id="tuneBtn" class="pill" title="Tuning">⚙</button><span id="fps" class="pill"></span><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>
+<div id="tunePanel" class="hide"></div>
 <div id="soundHint" class="pill">Click anywhere to enable sound</div>
 
 <script type="module" src="js/tennis/game.js"></script>
