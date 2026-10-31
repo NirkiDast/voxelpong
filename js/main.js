@@ -193,7 +193,8 @@ const host = new Host({
     if (!p || !m) return;
     if (m.t === 'r' && Array.isArray(m.h) && Array.isArray(m.n) && Array.isArray(m.v)) {
       p.control = 'racket';
-      p.racket = { h: new THREE.Vector3(...m.h), n: new THREE.Vector3(...m.n), v: new THREE.Vector3(...m.v) };
+      p.racket = { h: new THREE.Vector3(...m.h), n: new THREE.Vector3(...m.n), v: new THREE.Vector3(...m.v),
+        p: Array.isArray(m.p) ? new THREE.Vector3(...m.p) : null };
       const now = performance.now();
       // Player space: forward is -z, right is +x, up is +y.
       p.hist.push({ t: now, fwd: -m.v[2], lat: m.v[0], up: m.v[1], w: Array.isArray(m.w) ? m.w : null });
@@ -560,19 +561,34 @@ function predict(p) {
 // ---------- Player control ----------
 // Racket mode: the paddle moves to the ball by itself (like Wii table tennis), so the phone only
 // has to do what a real racket does: be angled, and be swung at the right moment.
+// Full motion (AR): the phone's real position in the room moves the paddle, so you have to reach.
+const AR_GAIN = { x: 1.7, y: 1.3, z: 1.2 };
 function updateRacket(pl, dt) {
   let tx = ball.pos.x * 0.3, ty = T.Y + 0.2;
+  let plan = null;
   if (G.mode === 'rally' && ball.inPlay && ball.lastHitter !== pl.i) {
-    const plan = predict(pl.i);
+    plan = predict(pl.i);
     tx = plan.x;
     ty = clamp(plan.y, T.Y + 0.03, T.Y + 0.75);
   } else if (G.mode === 'serve' && G.server === pl.i) {
     tx = 0; ty = T.Y + 0.14;
   }
-  // Leaning the racket nudges the paddle sideways a little, so you still feel in control of it.
-  if (pl.racket) tx += pl.racket.h.x * 0.12 * pl.zs;
-  pl.pos.x = damp(pl.pos.x, tx, 10, dt);
-  pl.pos.y = damp(pl.pos.y, ty, 10, dt);
+  const arP = pl.racket && pl.racket.p;
+  if (arP) {
+    let ax = arP.x * AR_GAIN.x * pl.zs, ay = T.Y + 0.22 + arP.y * AR_GAIN.y;
+    const az = pl.zs * (PZ + clamp(arP.z * AR_GAIN.z, -0.45, 0.45));
+    // Aim assist pulls the paddle part of the way toward the ball.
+    if (settings.assist && plan) { ax = lerp(ax, tx, 0.3); ay = lerp(ay, ty, 0.45); }
+    pl.pos.x = damp(pl.pos.x, clamp(ax, -1.3, 1.3), 35, dt);
+    pl.pos.y = damp(pl.pos.y, clamp(ay, T.Y - 0.05, T.Y + 0.9), 35, dt);
+    pl.pos.z = damp(pl.pos.z, az, 35, dt);
+  } else {
+    // Leaning the racket nudges the paddle sideways a little, so you still feel in control of it.
+    if (pl.racket) tx += pl.racket.h.x * 0.12 * pl.zs;
+    pl.pos.x = damp(pl.pos.x, tx, 10, dt);
+    pl.pos.y = damp(pl.pos.y, ty, 10, dt);
+    pl.pos.z = damp(pl.pos.z, pl.zs * PZ, 10, dt);
+  }
 
   if (!canHit(pl.i) || pl.resolvedShot === G.shotId) return;
   const dz = (ball.pos.z - pl.pos.z) * pl.zs; // < 0 while the ball is still in front of the paddle
@@ -586,6 +602,12 @@ function updateRacket(pl, dt) {
   for (const h of pl.hist) if (now - h.t < win && (!best || h.fwd > best.fwd)) best = h;
   const d = Math.hypot(ball.pos.x - pl.pos.x, ball.pos.y - pl.pos.y);
   const quality = clamp(1 - d / 0.3, 0.3, 1);
+  // With real position tracking you can whiff: the ball has to actually be near the paddle.
+  const reach = arP ? (settings.assist ? 0.26 : 0.17) : Infinity;
+  if (d > reach) {
+    if (dz > 0.12) pl.resolvedShot = G.shotId;
+    return;
+  }
   if (best && best.fwd > thr) {
     const r = pl.racket;
     // Forehand or backhand: whichever calibrated wrist rotation this swing resembles more.

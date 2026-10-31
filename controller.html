@@ -46,6 +46,9 @@
   #calDots span { width: 14px; height: 14px; border-radius: 4px; background: rgba(255,255,255,0.12); }
   #calDots span.done { background: var(--me); box-shadow: 0 0 10px var(--me); }
   #calMsg { min-height: 20px; font-weight: 600; }
+  html.ar, html.ar body { background: transparent; }
+  html.ar #paddle { opacity: 0.35; }
+  #arNote { font-size: 11px; color: rgba(255,255,255,0.45); text-align: center; }
   #hapticSwitch { position: absolute; opacity: 0; pointer-events: none; left: -100px; }
 </style>
 <script src="vendor/peerjs.min.js"></script>
@@ -94,6 +97,8 @@
     <button id="startBtn">Start game</button>
     <button id="modeBtn">Touch mode</button>
   </div>
+  <div class="row"><button id="arBtn" class="hide" style="background: linear-gradient(90deg, var(--p1), var(--p2)); color: #0b0620; font-weight: 800;">Full motion (AR)</button></div>
+  <div id="arNote"></div>
 </div>
 
 <div id="hitFlash"></div>

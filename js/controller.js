@@ -177,10 +177,9 @@ function startGenericSensors() {
     lin?.addEventListener('reading', () => { aDev = [lin.x, lin.y, lin.z]; });
     ori.addEventListener('reading', () => {
       if (failed) return;
-      qDev = Array.from(ori.quaternion);
       sensorKind = 'sensor-api';
       rates.ori++;
-      onPose();
+      setPose(Array.from(ori.quaternion), 'sensor');
     });
     ori.start(); gyr.start(); lin?.start();
     // Some browsers expose the API but never deliver readings; fall back if nothing arrives.
@@ -198,10 +197,9 @@ function startLegacySensors() {
   legacyStarted = true;
   addEventListener('deviceorientation', (e) => {
     if (e.beta == null || sensorKind === 'sensor-api') return;
-    qDev = qFromEuler(e.alpha || 0, e.beta, e.gamma || 0);
     sensorKind = 'deviceorientation';
     rates.ori++;
-    onPose();
+    setPose(qFromEuler(e.alpha || 0, e.beta, e.gamma || 0), 'sensor');
   });
   addEventListener('devicemotion', (e) => {
     if (sensorKind === 'sensor-api') return;
@@ -213,8 +211,21 @@ function startLegacySensors() {
   });
 }
 
+// Orientation can come from the motion sensors or, during AR, from the AR camera tracking (Chrome
+// may pause sensor events while AR runs). Switching source re-homes the racket automatically.
+let poseSrc = null, lastSensorT = 0;
+function setPose(q, src) {
+  const now = performance.now();
+  if (src === 'sensor') lastSensorT = now;
+  else if (now - lastSensorT < 150) return; // fresh sensor data wins
+  if (src !== poseSrc) { poseSrc = src; frame = null; }
+  qDev = q;
+  onPose();
+}
+
 // Recenter: the current pose becomes "racket upright, face toward the screen".
 function calibrate() {
+  if (xr.session) xr.frame = null; // AR re-homes position on its next frame
   if (!qDev) return;
   const up = [0, 0, 1];
   let f = qrot(qDev, [0, 0, -1]);          // the back of the phone points at the screen
@@ -241,14 +252,17 @@ function onPose() {
   const a = toPlayer(qrot(qDev, aDev));
   // Leaky integration gives a short-term arm velocity without long-term drift.
   vLin = add(scale(vLin, Math.exp(-dt * 7)), scale(a, dt));
-  const v = add(cross(w, scale(head, RACKET_LEN)), scale(vLin, 0.8));
+  // In AR mode the arm's real velocity comes from tracked position instead of the accelerometer.
+  const v = add(cross(w, scale(head, RACKET_LEN)), xr.p ? xr.vel : scale(vLin, 0.8));
   if (recording) recording.samples.push({ t: now, v, w });
 
   state.x = clamp(head[0] / 0.7, -1.5, 1.5);
   state.y = clamp(-face[1] / 0.7, -1.5, 1.5);
   if (now - state.lastSend >= 8) {
     const r3 = (u) => u.map((k) => +k.toFixed(3));
-    link?.sendFast({ t: 'r', h: r3(head), n: r3(face), v: r3(v), w: r3(w) });
+    const msg = { t: 'r', h: r3(head), n: r3(face), v: r3(v), w: r3(w) };
+    if (xr.p) msg.p = r3(xr.p);
+    link?.sendFast(msg);
     rates.sent++;
     state.lastSend = now;
   }
@@ -259,6 +273,93 @@ function onPose() {
   if (!recording && fwd > thr && now > swingLock) {
     swingLock = now + 400;
     sendSwing(clamp((fwd - thr) / (full - thr), 0, 1) * 0.7 + 0.3, clamp(v[0] / 3, -1, 1));
+  }
+}
+
+// ---------- Full motion: AR position tracking (WebXR + ARCore, Android Chrome) ----------
+// The back camera and motion sensors together give the phone's position in the room, in metres.
+// Positions are sent relative to where the phone was at recenter, in player space.
+const xr = { session: null, ref: null, gl: null, frame: null, p0: null, p: null, last: null, lastT: 0, vel: [0, 0, 0], lastQ: null };
+const QX90 = [Math.SQRT1_2, 0, 0, Math.SQRT1_2]; // AR world is y-up; the sensor world is z-up
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+
+(async () => {
+  let ok = false;
+  try { ok = !!(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); } catch { ok = false; }
+  $('arBtn').classList.toggle('hide', !ok);
+  $('arNote').textContent = ok ? '' : 'Full motion (AR) needs an Android phone with Google Play Services for AR.';
+})();
+
+async function toggleAR() {
+  if (xr.session) { xr.session.end(); return; }
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local'],
+      optionalFeatures: ['dom-overlay'],
+      domOverlay: { root: document.body },
+    });
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl', { xrCompatible: true });
+    if (gl.makeXRCompatible) await gl.makeXRCompatible();
+    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+    xr.ref = await session.requestReferenceSpace('local');
+    Object.assign(xr, { session, gl, frame: null, p: null, last: null, lastQ: null });
+    document.documentElement.classList.add('ar');
+    $('arBtn').textContent = 'Stop full motion';
+    $('cue').textContent = 'FULL MOTION ON';
+    session.addEventListener('end', () => {
+      Object.assign(xr, { session: null, p: null, frame: null });
+      document.documentElement.classList.remove('ar');
+      $('arBtn').textContent = 'Full motion (AR)';
+      $('cue').textContent = '';
+    });
+    session.requestAnimationFrame(onXRFrame);
+  } catch (e) {
+    console.warn('AR failed', e);
+    $('cue').textContent = 'AR COULD NOT START';
+  }
+}
+
+function onXRFrame(t, frameXR) {
+  const session = frameXR.session;
+  session.requestAnimationFrame(onXRFrame);
+  const gl = xr.gl;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const pose = frameXR.getViewerPose(xr.ref);
+  if (!pose) { $('cue').textContent = 'AR LOST TRACKING: POINT AT THE ROOM'; xr.p = null; return; }
+  const P = pose.transform.position, O = pose.transform.orientation;
+  const p = [P.x, P.y, P.z], q = [O.x, O.y, O.z, O.w];
+  const now = performance.now();
+  if (!xr.frame) {
+    let f = qrot(q, [0, 0, -1]);
+    f = [f[0], 0, f[2]];
+    if (Math.hypot(f[0], f[2]) < 0.3) { const tt = qrot(q, [0, 1, 0]); f = [tt[0], 0, tt[2]]; }
+    const F = norm(f), U = [0, 1, 0];
+    xr.frame = { F, U, R: cross(F, U) };
+    xr.p0 = p; xr.last = null; xr.vel = [0, 0, 0];
+  }
+  const fr = xr.frame;
+  const d = sub(p, xr.p0);
+  const rel = [dot(d, fr.R), dot(d, fr.U), -dot(d, fr.F)];
+  if (xr.last) {
+    const dt = clamp((now - xr.lastT) / 1000, 0.005, 0.1);
+    xr.vel = add(scale(xr.vel, 0.35), scale(sub(rel, xr.last), 0.65 / dt));
+  }
+  xr.last = rel; xr.lastT = now; xr.p = rel;
+  if ($('cue').textContent.startsWith('AR LOST')) $('cue').textContent = '';
+  // If the motion sensors went quiet during AR, drive the racket angle from the AR pose instead.
+  if (now - lastSensorT > 150) {
+    if (xr.lastQ) {
+      const dq = qmul([-xr.lastQ[0], -xr.lastQ[1], -xr.lastQ[2], xr.lastQ[3]], q); // device-frame delta
+      const ang = 2 * Math.acos(clamp(dq[3], -1, 1));
+      const sn = Math.sqrt(Math.max(1e-9, 1 - dq[3] * dq[3]));
+      const dt = clamp((now - (xr.lastQT || now)) / 1000, 0.005, 0.1);
+      wDev = [dq[0] / sn * ang / dt, dq[1] / sn * ang / dt, dq[2] / sn * ang / dt];
+    }
+    xr.lastQ = q; xr.lastQT = now;
+    setPose(qmul(QX90, q), 'xr');
   }
 }
 
@@ -372,6 +473,7 @@ $('calSkip').addEventListener('click', () => {
   startPlay();
 });
 $('swingCalBtn').addEventListener('click', startCalibration);
+$('arBtn').addEventListener('click', toggleAR);
 
 let swingId = 0;
 function sendSwing(p, d) {
