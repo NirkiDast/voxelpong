@@ -53,7 +53,10 @@ const AI_LEVELS = {
   medium: { speed: 7.4, err: 1.0, miss: 0.06, power: [0.35, 0.75], fault: 0.15 },
   hard:   { speed: 8.6, err: 0.55, miss: 0.025, power: [0.5, 0.9], fault: 0.08 },
 };
-const settings = { level: 'medium', games: 3 };
+const settings = { level: 'medium', games: 3, format: '1v1' };
+const singles = () => settings.format === '1v1';
+const active = (p) => !singles() || p.i === 0 || p.i === 2;
+const courtHW = () => (singles() ? C.SHW : C.HW);   // in-play half width
 
 // ---------- Renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -226,7 +229,7 @@ function pointText() {
   }
   return [PT_NAMES[Math.min(a, 3)], PT_NAMES[Math.min(b, 3)]];
 }
-const teamName = (t) => (t === 0 ? (players[1].kind === 'human' ? 'P1 & P2' : 'YOU & CPU') : 'CPU & CPU');
+const teamName = (t) => (singles() ? (t === 0 ? 'YOU' : 'CPU') : t === 0 ? (players[1].kind === 'human' ? 'P1 & P2' : 'YOU & CPU') : 'CPU & CPU');
 function renderScore() {
   const [a, b] = pointText();
   $('sName0').textContent = teamName(0);
@@ -274,7 +277,7 @@ function later(sec, fn) { G.deadUntil = G.time + sec; G.nextFn = fn; }
 
 // ---------- Point setup ----------
 function startPoint() {
-  G.server = SERVE_ORDER[G.gameIdx % 4];
+  G.server = singles() ? [0, 2][G.gameIdx % 2] : SERVE_ORDER[G.gameIdx % 4];
   G.second = false;
   setupServe();
 }
@@ -285,20 +288,25 @@ function setupServe() {
   const sx = sg * (deuce ? 1 : -1);  // server's x sign: their right half on the deuce side
   const partner = players.find((p) => p.team === s.team && p !== s);
   s.role = 'back'; partner.role = 'front';
-  s.pos.set(sx * 1.4, 0, sg * (C.HL + 0.5));
+  s.pos.set(sx * (singles() ? 0.8 : 1.4), 0, sg * (C.HL + 0.5));
   partner.pos.set(-sx * 2.4, 0, sg * 4.2);
   s.half = Math.sign(s.pos.x); partner.half = -s.half;
   // Receiving team: player A takes the deuce court, player B the ad court.
   const rt = 1 - s.team, rs = sideOf(rt);
   const box = -sx;                     // x sign of the target service box
   const ra = players[rt * 2], rb = players[rt * 2 + 1];
-  const receiver = deuce ? ra : rb;
-  const rpart = deuce ? rb : ra;
+  const receiver = singles() ? ra : deuce ? ra : rb;
+  const rpart = receiver === ra ? rb : ra;
   receiver.role = 'back'; rpart.role = 'front';
-  receiver.pos.set(box * 2.7, 0, rs * (C.HL - 0.2));
+  receiver.pos.set(box * (singles() ? 2.0 : 2.7), 0, rs * (C.HL - 0.2));
   rpart.pos.set(-box * 2.4, 0, rs * 5.8);
   receiver.half = box; rpart.half = -box;
-  players.forEach((p) => { p.vel.set(0, 0, 0); p.plan = null; p.swing = null; p.ch.setBase(p === s ? 'serveReady' : 'ready'); });
+  players.forEach((p) => {
+    p.vel.set(0, 0, 0); p.plan = null; p.swing = null; p.ch.setBase(p === s ? 'serveReady' : 'ready');
+    p.ch.group.visible = active(p);
+    if (!active(p)) { p.pos.set(sideOf(p.team) * 30, 0, sideOf(p.team) * 30); p.role = 'off'; }
+    if (singles() && active(p)) p.role = 'back';
+  });
   G.serveBox = box;
   G.phase = 'serve';
   G.timer = 0;
@@ -309,7 +317,7 @@ function setupServe() {
   sendState();
   if (!G.demo) {
     const me = s.kind === 'human';
-    const who = me ? (players[1].kind === 'human' ? `P${s.i + 1} serve` : 'Your serve') : null;
+    const who = me ? (!singles() && players[1].kind === 'human' ? `P${s.i + 1} serve` : 'Your serve') : null;
     const how = s.control === 'racket' ? 'flick the phone up to toss, then swing' : 'click / swing to toss, again to hit';
     setHint(me ? `${who}${G.second ? ' (second serve)' : ''}: ${how}` : (G.second ? 'Second serve' : ''));
   }
@@ -367,12 +375,12 @@ function planReceivers() {
   const sg = sideOf(team);
   const { samples, firstBounce } = predict();
   if (!samples.length) return;
-  const mates = players.filter((p) => p.team === team);
+  const mates = players.filter((p) => p.team === team && active(p));
   const front = mates.find((p) => p.role === 'front') || mates[0];
-  const back = mates.find((p) => p !== front);
+  const back = mates.find((p) => p !== front) || front;
   let pick = null;
   // The net player volleys balls that come through their zone at a playable height (not serves).
-  if (!ball.serve) {
+  if (!ball.serve && front.role === 'front') {
     let best = null;
     for (const s of samples) {
       if (s.bounces > 0) break;
@@ -395,7 +403,7 @@ function planReceivers() {
     }
     if (!best) return;
     // Clearly going out? The AI leaves it. A human still gets the choice.
-    const out = firstBounce && (Math.abs(firstBounce.x) > C.HW + 0.3 || Math.abs(firstBounce.z) > C.HL + 0.3 || Math.sign(firstBounce.z) !== sg);
+    const out = firstBounce && (Math.abs(firstBounce.x) > courtHW() + 0.3 || Math.abs(firstBounce.z) > C.HL + 0.3 || Math.sign(firstBounce.z) !== sg);
     const who = Math.abs(best.pos.x - back.pos.x) < Math.abs(best.pos.x - front.pos.x) + 3 ? back : front;
     if (out && who.kind !== 'human') return;
     pick = { p: who, s: best, volley: false };
@@ -415,7 +423,8 @@ function planReceivers() {
 function hitBall(p, { power, aim = 0, spin = 0, lob = false, quality = 1 }) {
   const sg = sideOf(p.team);
   const err = (1 - quality) * 2.2;
-  let tx = clamp(aim * (C.HW - 0.9), -(C.HW - 0.6), C.HW - 0.6) + rnd(-1, 1) * err;
+  const hw = courtHW();
+  let tx = clamp(aim * (hw - 0.9), -(hw - 0.6), hw - 0.6) + rnd(-1, 1) * err;
   let tz, T;
   if (lob) {
     tz = -sg * (C.HL - 1.6 - rnd(0, 1.5)) - sg * rnd(-0.6, 0.6) * err;
@@ -443,7 +452,7 @@ function aiHit(p) {
   // Long rallies make the CPU shakier, so points always end.
   const tired = 1 + G.shots * 0.12;
   if (Math.random() < L.miss * tired * (p.plan.volley ? 1.5 : 1)) { p.plan.done = true; return; }
-  const opp = players.filter((o) => o.team !== p.team);
+  const opp = players.filter((o) => o.team !== p.team && active(o));
   const gapX = -Math.sign(opp.reduce((a, o) => a + o.pos.x, 0) || rnd(-1, 1));
   const aim = clamp(gapX * rnd(0.3, 0.9) + rnd(-0.3, 0.3), -0.95, 0.95);
   const lob = !p.plan.volley && Math.random() < 0.06;
@@ -560,7 +569,7 @@ function onBounce(pos, speed) {
   rings.spawn(pos.clone().setY(0.01), new THREE.Color(0xd8ff66), { flat: true, from: 0.1, to: 0.9, dur: 0.4 });
   if (!ball.live) return;
   const sideTeam = pos.z > 0 ? 0 : 1;
-  const lineCall = (x, z) => Math.abs(x) <= C.HW + C.R && Math.abs(z) <= C.HL + C.R;
+  const lineCall = (x, z) => Math.abs(x) <= courtHW() + C.R && Math.abs(z) <= C.HL + C.R;
   if (ball.serve) {
     const sg = sideOf(ball.lastTeam);
     const inBox = sideTeam !== ball.lastTeam && Math.abs(pos.z) <= C.SVC + C.R &&
@@ -637,7 +646,7 @@ function homeOf(p) {
   const z = p.role === 'front' ? sg * 4.2 : sg * (C.HL - 0.3);
   p.homeShift = damp(p.homeShift || 0, ball.live ? clamp(ball.pos.x * 0.35, -1.5, 1.5) : 0, 2, 1 / 60);
   const shift = Math.round(p.homeShift * 2) / 2;
-  return new THREE.Vector3(p.half * 2.4 + shift, 0, z);
+  return new THREE.Vector3((singles() ? 0 : p.half * 2.4) + shift, 0, z);
 }
 
 function updatePlayer(p, dt) {
@@ -757,7 +766,7 @@ function update(dt) {
     }
     if (ball.live && (Math.abs(ball.pos.z) > 30 || Math.abs(ball.pos.x) > 25)) award(1 - ball.lastTeam, 'OUT');
   }
-  players.forEach((p) => updatePlayer(p, dt));
+  players.forEach((p) => { if (active(p)) updatePlayer(p, dt); });
 }
 
 // ---------- Camera ----------
@@ -775,6 +784,7 @@ function updateCamera(dt) {
     // Auto zoom: pull back (and up) when anyone, or the ball, gets wide or deep.
     let wide = 0, deep = 0;
     for (const q of players) {
+      if (!active(q)) continue;
       wide = Math.max(wide, Math.abs(q.pos.x) - (C.HW + 0.5));
       if (q.team === 0) deep = Math.max(deep, q.pos.z - (C.HL + 1.5));
       else deep = Math.max(deep, -q.pos.z - (C.HL + 1.5));
@@ -894,7 +904,7 @@ function startMatch() {
   enableAudio();
   G.demo = false;
   players[0].kind = 'human';
-  players[1].kind = players[1].phone ? 'human' : 'ai';
+  players[1].kind = !singles() && players[1].phone ? 'human' : 'ai';
   players[0].control = players[0].phone ? players[0].control : 'touch';
   G.pts = [0, 0]; G.games = [0, 0]; G.gameIdx = 0;
   $('lobby').classList.add('hide');
@@ -917,7 +927,7 @@ function gameOver(team) {
   G.phase = 'over';
   G.timer = 0;
   const win = team === 0;
-  $('banner').textContent = win ? (players[1].kind === 'human' ? 'YOU BOTH WIN!' : 'YOU WIN!') : 'CPU WINS';
+  $('banner').textContent = win ? (!singles() && players[1].kind === 'human' ? 'YOU BOTH WIN!' : 'YOU WIN!') : 'CPU WINS';
   $('banner').style.color = win ? 'var(--p1)' : 'var(--p2)';
   $('overPanel').classList.remove('hide');
   if (win) sfx.win();
@@ -931,6 +941,13 @@ document.querySelectorAll('[data-level]').forEach((b) => b.addEventListener('cli
   settings.level = b.dataset.level;
   document.querySelectorAll('[data-level]').forEach((x) => x.classList.toggle('on', x === b));
   sfx.blip();
+}));
+document.querySelectorAll('[data-format]').forEach((b) => b.addEventListener('click', () => {
+  settings.format = b.dataset.format;
+  document.querySelectorAll('[data-format]').forEach((x) => x.classList.toggle('on', x === b));
+  $('p2Card').classList.toggle('soon', singles());
+  sfx.blip();
+  if (G.demo) { G.pts = [0, 0]; G.gameIdx = 0; startPoint(); }
 }));
 document.querySelectorAll('[data-games]').forEach((b) => b.addEventListener('click', () => {
   settings.games = +b.dataset.games;
@@ -955,7 +972,7 @@ function frame(now) {
   if (G.hitStop > 0) { G.hitStop -= dt; dt *= 0.08; }
   const sdt = dt * TUNE.gameSpeed;
   update(sdt);
-  players.forEach((p) => animatePlayer(p, sdt));
+  players.forEach((p) => { if (active(p)) animatePlayer(p, sdt); });
   ballMesh.position.copy(ball.pos);
   ballMesh.rotation.x += sdt * 12; ballMesh.rotation.y += sdt * 7;
   ballLight.position.copy(ball.pos);
