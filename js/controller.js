@@ -273,8 +273,8 @@ let recording = null;
 const cal = { step: 0, swings: { fh: [], bh: [] } };
 const CAL_STEPS = [
   { key: 'center', title: 'FACE THE TV', text: 'Stand where you will play. Hold the phone like a racket handle: upright, screen facing you, the back pointing at the TV. Then tap the circle.', pad: 'TAP WHEN READY' },
-  { key: 'fh', title: 'FOREHAND x3', text: 'Press and hold the circle with your thumb, do a normal forehand swing toward the TV, and let go the moment the swing ends.', pad: 'HOLD, SWING, RELEASE' },
-  { key: 'bh', title: 'BACKHAND x3', text: 'Same again with your backhand: hold the circle, swing, and release when the swing ends.', pad: 'HOLD, SWING, RELEASE' },
+  { key: 'fh', title: 'FOREHAND x3', text: 'Take your racket back first. Then press and hold the circle with your thumb as you start swinging forward, and let go when your follow-through ends.', pad: 'HOLD, SWING, RELEASE' },
+  { key: 'bh', title: 'BACKHAND x3', text: 'Same with your backhand: take it back, press and hold as you start swinging forward, and release when the follow-through ends.', pad: 'HOLD, SWING, RELEASE' },
 ];
 
 function startCalibration() {
