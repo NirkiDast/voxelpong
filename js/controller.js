@@ -56,6 +56,8 @@ function onData(m) {
     $('tennisCalBtn').classList.toggle('hide', game !== 'tennis');
     $('who').innerHTML = `PLAYER ${slot}<br>${game === 'tennis' ? 'RACKET' : 'PADDLE'}`;
     if (game === 'tennis' && shots) link.send({ t: 'shots', models: shots });
+    // Old QR without the game in it: swap the ping pong calibration for the tennis one.
+    if (game === 'tennis' && calMode === 'swing' && $('calib') && !$('calib').classList.contains('hide') && cal.step === 0) startTennisCal();
   }
   else if (m.t === 'camcal') {
     const txt = { raise: 'Camera: raise this hand above your head', still: 'Camera: hold the phone out in front, facing the TV, and keep still', done: 'Camera locked on your hand ✓' };
@@ -164,7 +166,7 @@ async function enableMotion() {
     }, 1500);
     state.mode = 'motion';
     frame = null;
-    startCalibration();
+    if (game === 'tennis') startTennisCal(); else startCalibration();
   } catch (e) {
     $('setupErr').textContent = e.message;
   }
@@ -383,7 +385,7 @@ function onXRFrame(t, frameXR) {
 let profile = null;
 try { profile = JSON.parse(localStorage.getItem('vxpp-swing-profile') || 'null'); } catch { /* private mode */ }
 let recording = null;
-let game = 'pingpong';
+let game = params.get('g') === 'tennis' ? 'tennis' : 'pingpong';
 // Tennis shot calibration (phase 2): three recordings of each shot become a model per shot.
 let shots = null;
 try { shots = JSON.parse(localStorage.getItem('vxpp-tennis-shots') || 'null'); } catch { /* private mode */ }
@@ -391,10 +393,12 @@ let calMode = 'swing';
 const tcal = { i: 0, feats: {} };
 function startTennisCal() {
   calMode = 'tennis';
-  if (qDev) calibrate();   // these are measured relative to facing the TV
+  // These are measured relative to facing the TV. Sensors may still be starting, so wait for them.
+  let tries = 0;
+  const center = () => { if (qDev) { calibrate(); link?.send({ t: 'recenter' }); } else if (++tries < 25) setTimeout(center, 200); };
+  center();
   tcal.i = 0;
   tcal.feats = {};
-  $('calSkip').textContent = 'Skip this shot';
   $('calRedo').textContent = 'Redo this shot';
   show('calib');
   renderTennisCal('Face the TV for all of these.');
@@ -404,6 +408,8 @@ function renderTennisCal(msg = '') {
   const st = TENNIS_SHOTS[tcal.i];
   const got = (tcal.feats[st.key] || []).length;
   $('calStep').textContent = `SHOT ${tcal.i + 1} OF ${TENNIS_SHOTS.length}`;
+  const fresh = tcal.i === 0 && !Object.keys(tcal.feats).length && shots && Object.keys(shots).length;
+  $('calSkip').textContent = fresh ? 'Use my last calibration' : 'Skip this shot';
   $('calTitle').textContent = st.title;
   $('calText').textContent = `${st.text} Press and hold the circle as you start the motion, let go when it ends. 3 times.`;
   $('holdPad').textContent = 'HOLD, SWING, RELEASE';
@@ -545,7 +551,10 @@ $('calRedo').addEventListener('click', () => {
   startCalibration();
 });
 $('calSkip').addEventListener('click', () => {
-  if (calMode === 'tennis') { delete tcal.feats[TENNIS_SHOTS[tcal.i].key]; nextTennisShot('Skipped.'); return; }
+  if (calMode === 'tennis') {
+    if ($('calSkip').textContent === 'Use my last calibration') { tcal.i = TENNIS_SHOTS.length - 1; tcal.feats = {}; nextTennisShot('Using your saved shots.'); return; }
+    delete tcal.feats[TENNIS_SHOTS[tcal.i].key]; nextTennisShot('Skipped.'); return;
+  }
   if (!frame) calibrate();
   if (profile) link?.send({ t: 'prof', ...profile });
   startPlay();

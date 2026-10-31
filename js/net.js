@@ -143,7 +143,7 @@ export class Host {
 
   controllerUrl(slot) {
     const u = new URL('controller.html', location.href);
-    return `${u.origin}${u.pathname}?room=${this.code}&slot=${slot}${signalParam()}`;
+    return `${u.origin}${u.pathname}?room=${this.code}&slot=${slot}${this.roomKey === 'vxpp-room-tennis' ? '&g=tennis' : ''}${signalParam()}`;
   }
 }
 

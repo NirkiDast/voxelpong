@@ -906,6 +906,8 @@ const host = new Host({
     } else if (m.t === 'shots') {
       if (m.models && typeof m.models === 'object') {
         p.shots = m.models;
+        // Handedness from the flat forehand: right-handers swing it right to left across the body.
+        if (p.shots.fhFlat?.mu) p.hand = p.shots.fhFlat.mu[0] < 0 ? 'right' : 'left';
         const n = Object.keys(p.shots).length;
         if (G.demo) callout(`P${slot}: ${n} SHOTS CALIBRATED`, TEAM_COLORS[0], 'big');
       }
