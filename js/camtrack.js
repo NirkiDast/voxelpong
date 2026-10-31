@@ -4,18 +4,18 @@
 //
 // Output per player, in player space (metres-ish, relative to where the hand was at Recenter):
 //   x = right, y = up, z = toward the player (the TV/camera is at -z).
-import { FilesetResolver, PoseLandmarker } from '../vendor/mediapipe/vision_bundle.mjs';
 
 const L_SH = 11, R_SH = 12, L_WR = 15, R_WR = 16, L_EL = 13, R_EL = 14;
 const SHOULDER_M = 0.38;   // typical adult shoulder width, used to turn image units into metres
 const LOOKAHEAD = 0.07;    // seconds of extrapolation to hide camera + inference delay
-const STALE_MS = 250;
+const STALE_MS = 600;      // after this long without seeing the hand, hand control back to auto
 
 export class CamTracker {
   constructor({ video, canvas, onStatus, onCalib }) {
     Object.assign(this, { video, canvas, onStatus, onCalib });
     this.ctx = canvas.getContext('2d');
     this.players = 1;
+    this.hand = ['right', 'right']; // from the phone's swing calibration, used if the raise step times out
     this.tracks = [this.blank(), this.blank()];
     this.running = false;
     this.fps = 0;
@@ -42,15 +42,18 @@ export class CamTracker {
     this.video.playsInline = true;
     await this.video.play();
     this.onStatus('Loading body tracker…');
-    const base = new URL('../vendor/mediapipe/', import.meta.url).href;
-    const fileset = await FilesetResolver.forVisionTasks(base + 'wasm');
-    const opts = (delegate) => ({
-      baseOptions: { modelAssetPath: base + 'pose_landmarker_lite.task', delegate },
-      runningMode: 'VIDEO', numPoses: 2,
-      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+    // The model runs in a worker thread (js/camworker.js) so it never stalls the game's rendering.
+    this.worker = new Worker(new URL('./camworker.js', import.meta.url));
+    await new Promise((resolve, reject) => {
+      this.worker.onmessage = (e) => {
+        if (e.data.type === 'ready') { this.delegate = e.data.delegate; resolve(); }
+        else if (e.data.type === 'error') reject(new Error(e.data.message));
+      };
+      this.worker.onerror = (e) => reject(new Error(e.message || 'worker failed'));
+      this.worker.postMessage({ type: 'init' });
     });
-    try { this.lm = await PoseLandmarker.createFromOptions(fileset, opts('GPU')); }
-    catch { this.lm = await PoseLandmarker.createFromOptions(fileset, opts('CPU')); }
+    this.worker.onmessage = (e) => this.onResult(e.data);
+    this.busy = false;
     this.running = true;
     this.onStatus('Tracking: step into view');
     this.loop();
@@ -60,27 +63,39 @@ export class CamTracker {
     this.running = false;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    this.lm?.close();
-    this.lm = null;
+    this.worker?.terminate();
+    this.worker = null;
     this.tracks = [this.blank(), this.blank()];
   }
 
+  // Every new camera frame: redraw the preview, and hand the frame to the worker if it's free
+  // (one frame in flight at a time, so a slow PC just tracks at a lower rate instead of queueing up).
   loop() {
     if (!this.running) return;
     const v = this.video;
-    const next = () => (v.requestVideoFrameCallback ? v.requestVideoFrameCallback(() => this.loop()) : requestAnimationFrame(() => this.loop()));
-    if (v.readyState >= 2 && this.lm) {
-      const t0 = performance.now();
-      let res = null;
-      try { res = this.lm.detectForVideo(v, t0); } catch (err) { console.warn('pose', err); }
-      const t1 = performance.now();
-      this.latency = this.latency ? this.latency * 0.9 + (t1 - t0) * 0.1 : t1 - t0;
-      if (this.lastT) this.fps = this.fps * 0.9 + (1000 / Math.max(1, t1 - this.lastT)) * 0.1;
-      this.lastT = t1;
-      if (res) this.ingest(res, t1);
-      this.draw(res);
+    const next = () => (v.requestVideoFrameCallback ? v.requestVideoFrameCallback(() => this.loop()) : setTimeout(() => this.loop(), 16));
+    if (v.readyState >= 2) {
+      this.draw();
+      if (!this.busy && this.worker) {
+        this.busy = true;
+        const ts = performance.now();
+        createImageBitmap(v, { resizeWidth: 320, resizeHeight: 240, resizeQuality: 'low' })
+          .then((bitmap) => { if (this.worker) this.worker.postMessage({ type: 'frame', bitmap, ts }, [bitmap]); else bitmap.close(); })
+          .catch(() => { this.busy = false; });
+      }
     }
     next();
+  }
+
+  onResult(r) {
+    this.busy = false;
+    if (r.type !== 'res' || !this.running) return;
+    const now = performance.now();
+    this.latency = this.latency ? this.latency * 0.9 + (now - r.ts) * 0.1 : now - r.ts;
+    if (this.lastT) { const f = 1000 / Math.max(1, now - this.lastT); this.fps = this.fps ? this.fps * 0.9 + f * 0.1 : f; }
+    this.lastT = now;
+    // Positions are stamped with when the frame was captured, so look-ahead covers the full delay.
+    this.ingest(r, r.ts);
   }
 
   ingest(res, now) {
@@ -130,8 +145,8 @@ export class CamTracker {
     // Phone check: the racket hand moves the way the phone moves. Compare both wrists' motion with the
     // phone's (from about a camera-delay ago) and switch if the other hand clearly matches better.
     const other = wr === L_WR ? R_WR : L_WR;
-    if (tr.prevLm && now - tr.t < 100) {
-      const ph = this.phoneVel(i, now - 80);
+    if (tr.prevLm && now - tr.t < 150) {
+      const ph = this.phoneVel(i, now - 40);
       if (ph) {
         const dt = Math.max(0.01, (now - tr.t) / 1000);
         const vel = (idx) => ({ x: -(lm[idx].x - tr.prevLm[idx].x) * k / dt, y: -(lm[idx].y - tr.prevLm[idx].y) * k * aspect / dt });
@@ -176,7 +191,7 @@ export class CamTracker {
     const idx = i == null ? [...Array(this.players).keys()] : [i];
     idx.forEach((j) => {
       const tr = this.tracks[j];
-      tr.cal = { stage: 'raise', since: 0, cand: 0 };
+      tr.cal = { stage: 'raise', since: 0, cand: 0, t0: performance.now() };
       tr.wImg = null; tr.home = null; tr.vote = 0;
       this.onCalib?.(j, 'raise');
     });
@@ -191,9 +206,12 @@ export class CamTracker {
       // A wrist clearly above the nose (in image y, smaller is higher) counts as raised.
       const head = lm[0].y;
       const up = [L_WR, R_WR].filter((w) => lm[w].y < head - 0.03 && (lm[w].visibility ?? 1) > 0.3);
-      const cand = up.length === 1 ? up[0] : 0; // both hands up is ambiguous
-      if (cand && cand === c.cand) {
-        if (now - c.since > 500) {
+      let cand = up.length === 1 ? up[0] : 0; // both hands up is ambiguous
+      // Never get stuck here: after 6 s, go with the hand the phone's swing calibration says you use.
+      const timedOut = now - c.t0 > 6000;
+      if (timedOut) cand = this.hand[i] === 'left' ? L_WR : R_WR;
+      if (cand && (cand === c.cand || timedOut)) {
+        if (timedOut || now - c.since > 400) {
           tr.wr = cand;
           tr.wImg = { x: lm[cand].x, y: lm[cand].y };
           tr.t = now;
@@ -208,9 +226,10 @@ export class CamTracker {
     const p = { x: lm[wr].x, y: lm[wr].y };
     const moved = Math.hypot(p.x - c.last.x, p.y - c.last.y);
     const belowHead = p.y > lm[0].y + 0.05;
-    if (moved > 0.025 || !belowHead) { c.since = now; c.last = p; }
+    if (moved > 0.06 || !belowHead) { c.since = now; c.last = p; }
     tr.wr = wr; tr.wImg = p; tr.t = now; tr.prevLm = lm;
-    if (belowHead && now - c.since > 700) {
+    c.t1 ||= now;
+    if ((belowHead && now - c.since > 500) || now - c.t1 > 3000) {
       tr.cal = null;
       tr.wantHome = true;
       this.onCalib?.(i, 'done');
@@ -230,7 +249,7 @@ export class CamTracker {
     if (!h || !h.length) return null;
     let best = null;
     for (const s of h) if (!best || Math.abs(s.t - at) < Math.abs(best.t - at)) best = s;
-    return Math.abs(best.t - at) < 60 ? best : null;
+    return Math.abs(best.t - at) < 80 ? best : null;
   }
 
   // Predicted hand position for player i, or null when nobody is tracked for that slot.
@@ -239,7 +258,7 @@ export class CamTracker {
     if (!this.running || !tr.home || tr.cal) return null;
     const age = performance.now() - tr.t;
     if (age > STALE_MS) return null;
-    const la = Math.min(LOOKAHEAD + age / 1000, 0.12);
+    const la = Math.min(LOOKAHEAD + age / 1000, 0.15);
     const c = (v, m) => Math.max(-m, Math.min(m, v));
     return {
       x: tr.pos.x + c(tr.vel.x, 6) * la,
@@ -255,7 +274,7 @@ export class CamTracker {
 
   tracked(i) { return !!this.get(i); }
 
-  draw(res) {
+  draw() {
     const { ctx, canvas, video } = this;
     const w = canvas.width, h = canvas.height;
     ctx.save();
@@ -287,7 +306,6 @@ export class CamTracker {
     const names = this.players === 2 ? ['P1', 'P2'] : ['YOU'];
     const st = names.map((n, i) => `${n} ${this.tracks[i].cal ? 'calibrating' : this.tracked(i) ? '✓' : '–'}`).join('  ');
     ctx.fillText(`${st}   ${Math.round(this.fps)} fps · ${Math.round(this.latency)} ms`, 6, h - 5);
-    void res;
   }
 }
 

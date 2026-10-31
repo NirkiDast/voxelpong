@@ -225,6 +225,7 @@ const host = new Host({
         fh: Array.isArray(m.fh) ? m.fh : null, bh: Array.isArray(m.bh) ? m.bh : null,
         hand: m.hand === 'left' ? 'left' : 'right',
       };
+      if (cam) cam.hand[i] = p.profile.hand;
       if (p.profile.full < p.profile.thr * 1.5) p.profile.full = p.profile.thr * 1.5;
       popupScreen(`P${slot} SWING CALIBRATED`, p.color.getHex());
       $(`p${slot}State`).textContent = 'Phone connected · swings calibrated';
@@ -854,6 +855,7 @@ async function setCamTracking(on) {
     if (!$('camTrack').checked) return;
     const t = new CamTracker({ video: $('camVideo'), canvas: $('camCanvas'), onStatus: status, onCalib: showCamCal });
     t.players = settings.mode === '2p' ? 2 : 1;
+    t.hand = players.map((p) => (p.profile && p.profile.hand) || 'right');
     cam = t;
     await t.start();
     t.calibrate();
