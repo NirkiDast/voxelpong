@@ -1,5 +1,6 @@
 // Phone controller: reads tilt + swing from motion sensors (or touch) and streams them to the PC.
 import { Controller } from './net.js';
+import { shotFeatures, shotModel, TENNIS_SHOTS } from './shotfeat.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -50,6 +51,12 @@ function boot() {
 function onData(m) {
   if (!m) return;
   if (m.t === 'ping') link.sendFast({ t: 'pong', ts: m.ts });
+  else if (m.t === 'game') {
+    game = m.name;
+    $('tennisCalBtn').classList.toggle('hide', game !== 'tennis');
+    $('who').innerHTML = `PLAYER ${slot}<br>${game === 'tennis' ? 'RACKET' : 'PADDLE'}`;
+    if (game === 'tennis' && shots) link.send({ t: 'shots', models: shots });
+  }
   else if (m.t === 'camcal') {
     const txt = { raise: 'Camera: raise this hand above your head', still: 'Camera: hold the phone out in front, facing the TV, and keep still', done: 'Camera locked on your hand ✓' };
     $('arNote').textContent = txt[m.step] || '';
@@ -259,7 +266,7 @@ function onPose() {
   vLin = add(scale(vLin, Math.exp(-dt * 7)), scale(a, dt));
   // In AR mode the arm's real velocity comes from tracked position instead of the accelerometer.
   const v = add(cross(w, scale(head, RACKET_LEN)), xr.p ? xr.vel : scale(vLin, 0.8));
-  if (recording) recording.samples.push({ t: now, v, w });
+  if (recording) recording.samples.push({ t: now, v, w, h: head, n: face });
 
   state.x = clamp(head[0] / 0.7, -1.5, 1.5);
   state.y = clamp(-face[1] / 0.7, -1.5, 1.5);
@@ -376,6 +383,60 @@ function onXRFrame(t, frameXR) {
 let profile = null;
 try { profile = JSON.parse(localStorage.getItem('vxpp-swing-profile') || 'null'); } catch { /* private mode */ }
 let recording = null;
+let game = 'pingpong';
+// Tennis shot calibration (phase 2): three recordings of each shot become a model per shot.
+let shots = null;
+try { shots = JSON.parse(localStorage.getItem('vxpp-tennis-shots') || 'null'); } catch { /* private mode */ }
+let calMode = 'swing';
+const tcal = { i: 0, feats: {} };
+function startTennisCal() {
+  calMode = 'tennis';
+  if (qDev) calibrate();   // these are measured relative to facing the TV
+  tcal.i = 0;
+  tcal.feats = {};
+  $('calSkip').textContent = 'Skip this shot';
+  $('calRedo').textContent = 'Redo this shot';
+  show('calib');
+  renderTennisCal('Face the TV for all of these.');
+  link?.send({ t: 'cal', state: 'start' });
+}
+function renderTennisCal(msg = '') {
+  const st = TENNIS_SHOTS[tcal.i];
+  const got = (tcal.feats[st.key] || []).length;
+  $('calStep').textContent = `SHOT ${tcal.i + 1} OF ${TENNIS_SHOTS.length}`;
+  $('calTitle').textContent = st.title;
+  $('calText').textContent = `${st.text} Press and hold the circle as you start the motion, let go when it ends. 3 times.`;
+  $('holdPad').textContent = 'HOLD, SWING, RELEASE';
+  $('calDots').classList.remove('hide');
+  [...$('calDots').children].forEach((d, k) => d.classList.toggle('done', k < got));
+  $('calMsg').textContent = msg;
+}
+function tennisRecorded(rec) {
+  const st = TENNIS_SHOTS[tcal.i];
+  const dur = performance.now() - rec.t0;
+  if (dur < 120 || rec.samples.length < 4) return renderTennisCal('Too quick: hold the circle for the whole motion.');
+  if (dur > 3500) return renderTennisCal('That was long: press as you start, release as you finish.');
+  const f = shotFeatures(rec.samples);
+  if (!f) return renderTennisCal('Hardly any movement there. Try again with a bit more swing.');
+  (tcal.feats[st.key] ||= []).push(f);
+  buzz('hit', 0.6);
+  if (tcal.feats[st.key].length < 3) return renderTennisCal(`Nice! ${3 - tcal.feats[st.key].length} to go.`);
+  nextTennisShot(`${st.title.toLowerCase()} learned.`);
+}
+function nextTennisShot(msg) {
+  tcal.i++;
+  if (tcal.i < TENNIS_SHOTS.length) return renderTennisCal(msg[0].toUpperCase() + msg.slice(1));
+  // Done: keep earlier models for any shot that was skipped this time.
+  const models = { ...(shots || {}) };
+  for (const [k, list] of Object.entries(tcal.feats)) { const m = shotModel(list); if (m) models[k] = m; }
+  shots = models;
+  try { localStorage.setItem('vxpp-tennis-shots', JSON.stringify(shots)); } catch { /* private mode */ }
+  link?.send({ t: 'shots', models: shots });
+  calMode = 'swing';
+  $('calRedo').textContent = 'Start over';
+  buzz('win');
+  startPlay();
+}
 const cal = { step: 0, swings: { fh: [], bh: [] } };
 const CAL_STEPS = [
   { key: 'center', title: 'FACE THE TV', text: 'Stand where you will play. Hold the phone like a racket handle: upright, screen facing you, the back pointing at the TV. Then tap the circle.', pad: 'TAP WHEN READY' },
@@ -407,6 +468,12 @@ function renderCal(msg = '') {
 $('holdPad').addEventListener('pointerdown', (e) => {
   e.preventDefault();
   const st = CAL_STEPS[cal.step];
+  if (calMode === 'tennis') {
+    $('holdPad').classList.add('down');
+    recording = { t0: performance.now(), samples: [] };
+    if (canVibrate) navigator.vibrate(10);
+    return;
+  }
   if (st.key === 'center') {
     if (!qDev) { renderCal('Waiting for motion sensors…'); return; }
     calibrate();
@@ -425,7 +492,8 @@ const endHold = () => {
   $('holdPad').classList.remove('down');
   const rec = recording;
   recording = null;
-  analyzeSwing(rec);
+  if (calMode === 'tennis') tennisRecorded(rec);
+  else analyzeSwing(rec);
 };
 $('holdPad').addEventListener('pointerup', endHold);
 $('holdPad').addEventListener('pointercancel', endHold);
@@ -472,13 +540,18 @@ function finishCalibration() {
   startPlay();
 }
 
-$('calRedo').addEventListener('click', startCalibration);
+$('calRedo').addEventListener('click', () => {
+  if (calMode === 'tennis') { tcal.feats[TENNIS_SHOTS[tcal.i].key] = []; renderTennisCal('Starting this shot again.'); return; }
+  startCalibration();
+});
 $('calSkip').addEventListener('click', () => {
+  if (calMode === 'tennis') { delete tcal.feats[TENNIS_SHOTS[tcal.i].key]; nextTennisShot('Skipped.'); return; }
   if (!frame) calibrate();
   if (profile) link?.send({ t: 'prof', ...profile });
   startPlay();
 });
 $('swingCalBtn').addEventListener('click', startCalibration);
+$('tennisCalBtn').addEventListener('click', startTennisCal);
 $('arBtn').addEventListener('click', toggleAR);
 
 let swingId = 0;

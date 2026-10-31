@@ -13,6 +13,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { C, TEAM_COLORS, buildArena, buildTennisBall } from './court.js';
 import { createSmolPlayer } from './smolchar.js';
+import { shotFeatures, classify } from '../shotfeat.js';
 import { Particles, Rings, Trail, Shake } from '../fx.js';
 import { Host } from '../net.js';
 import { sfx, unlockAudio } from '../audio.js';
@@ -420,7 +421,7 @@ function planReceivers() {
   p.swingSide = fore ? 1 : -1;
 }
 
-function hitBall(p, { power, aim = 0, spin = 0, lob = false, quality = 1 }) {
+function hitBall(p, { power, aim = 0, spin = 0, lob = false, drop = false, quality = 1 }) {
   const sg = sideOf(p.team);
   const err = (1 - quality) * 2.2;
   const hw = courtHW();
@@ -429,6 +430,11 @@ function hitBall(p, { power, aim = 0, spin = 0, lob = false, quality = 1 }) {
   if (lob) {
     tz = -sg * (C.HL - 1.6 - rnd(0, 1.5)) - sg * rnd(-0.6, 0.6) * err;
     T = TUNE.lobTime;
+  } else if (drop) {
+    // Just over the net and dying: short, soft, with backspin.
+    tz = -sg * (1.4 + rnd(0, 1.4) + err * 0.6);
+    const dist = Math.hypot(tx - ball.pos.x, tz - ball.pos.z);
+    T = Math.max(0.75, dist / 10);
   } else {
     tz = -sg * (C.HL - 1.4 - (1 - power) * 5.2) - sg * rnd(-0.5, 0.8) * err;
     const dist = Math.hypot(tx - ball.pos.x, tz - ball.pos.z);
@@ -436,7 +442,7 @@ function hitBall(p, { power, aim = 0, spin = 0, lob = false, quality = 1 }) {
     if (spin > 0) T *= 1.12;
     if (spin < 0) T *= 1.15;
   }
-  ball.vel.copy(shotVelocity(ball.pos, tx, tz, T, lob ? 0 : spin, 0.25 + quality * 0.2 - err * 0.15));
+  ball.vel.copy(shotVelocity(ball.pos, tx, tz, T, lob ? 0 : spin, drop ? 0.12 : 0.25 + quality * 0.2 - err * 0.15));
   ball.spin = lob ? 0 : spin;
   ball.live = true; ball.serve = false; ball.bounces = 0; ball.netTouch = false;
   ball.lastTeam = p.team; ball.lastHitter = p.i;
@@ -505,7 +511,10 @@ function onSwing(i, power, extra = {}) {
 const RLATE = 0.2;
 function racketHit(p) {
   const pl = p.plan;
-  const thr = p.profile?.thr ?? 1.0, full = p.profile?.full ?? 5.5;
+  let thr = p.profile?.thr ?? 1.0;
+  const full = p.profile?.full ?? 5.5;
+  // A calibrated drop shot is a soft swing: make sure it still counts as a swing.
+  if (p.shots?.drop) thr = Math.min(thr, p.shots.drop.peak * 0.45);
   let best = null;
   for (const h of p.hist) if (h.gt >= pl.t - EARLY && (!best || h.fwd > best.fwd)) best = h;
   const late = G.time > pl.t + RLATE;
@@ -522,11 +531,37 @@ function racketHit(p) {
   let up = 0, n = 0;
   for (const h of p.hist) if (Math.abs(h.t - best.t) < 90) { up += h.up; n++; }
   up = n ? up / n : 0;
-  const spin = up > 0.8 ? clamp(up / 2.5, 0.25, 1) : up < -0.8 ? -0.6 : 0;
+  let spin = up > 0.8 ? clamp(up / 2.5, 0.25, 1) : up < -0.8 ? -0.6 : 0;
+  let power = clamp((best.fwd - thr) / (full - thr), 0.1, 1);
   const quality = clamp(1 - Math.abs(dt - 0.03) / 0.4, 0.4, 1);
-  hitBall(p, { power: clamp((best.fwd - thr) / (full - thr), 0.1, 1), aim: clamp(tim * pullDir * 0.9, -1, 1), spin, quality });
-  if (!G.demo && Math.abs(dt - 0.03) < 0.05) popupAt('PERFECT', ball.pos, TEAM_COLORS[p.team], 'big');
+  // Phase 2: recognise which calibrated shot this swing was.
+  let type = null;
+  const shot = recogniseShot(p, best, GROUND_SHOTS);
+  if (shot) {
+    type = SHOT_TYPE[shot.name];
+    power = clamp(shot.speed / shot.model.peak * 0.85, 0.1, 1);
+    spin = type === 'top' ? clamp(0.55 + power * 0.3, 0.4, 1) : type === 'slice' || type === 'drop' ? -0.6 : 0;
+  }
+  hitBall(p, { power, aim: clamp(tim * pullDir * 0.9, -1, 1), spin, quality, lob: type === 'lob', drop: type === 'drop' });
+  if (!G.demo && shot) popupAt(SHOT_LABEL[type], ball.pos, type === 'flat' ? 0xffffff : 0xffd166, 'big');
+  if (!G.demo && Math.abs(dt - 0.03) < 0.05) setTimeout(() => popupAt('PERFECT', ball.pos, TEAM_COLORS[p.team], 'big'), 250);
   strokeAtContact(p, pl);
+}
+
+// ---------- Phase 2: calibrated shot recognition ----------
+const GROUND_SHOTS = ['fhFlat', 'fhTop', 'bhFlat', 'bhTop', 'slice', 'lob', 'drop'];
+const SERVE_SHOTS = ['srvFlat', 'srvSpin'];
+const SHOT_TYPE = { fhFlat: 'flat', bhFlat: 'flat', fhTop: 'top', bhTop: 'top', slice: 'slice', lob: 'lob', drop: 'drop', srvFlat: 'flat', srvSpin: 'spin' };
+const SHOT_LABEL = { flat: 'FLAT', top: 'TOPSPIN', slice: 'SLICE', lob: 'LOB', drop: 'DROP SHOT', spin: 'SPIN SERVE' };
+// The motion around this swing's peak, matched against the player's calibrated shots.
+function recogniseShot(p, best, names) {
+  if (!p.shots || !best) return null;
+  const win = p.hist.filter((h) => Math.abs(h.t - best.t) < 160 && h.v);
+  const f = shotFeatures(win);
+  if (!f) return null;
+  const c = classify(f.vec, p.shots, names);
+  if (!c) return null;
+  return { name: c.name, dist: c.dist, model: p.shots[c.name], speed: f.peak };
 }
 
 // Upward racket-head motion during the swing means topspin, downward means slice.
@@ -721,7 +756,12 @@ function serveSwing(s) {
   let best = null;
   for (const h of s.hist) if (h.gt > G.toss0 + 0.25 && now - h.t < 150 && (!best || h.fwd > best.fwd)) best = h;
   if (!best || best.fwd <= thr) return false;
-  hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0 });
+  const shot = recogniseShot(s, best, SERVE_SHOTS);
+  if (shot) {
+    const spin = shot.name === 'srvSpin' ? 0.8 : 0;
+    hitServe(s, clamp(shot.speed / shot.model.peak * 0.9, 0.1, 1), { spin });
+    if (!G.demo) popupAt(spin ? 'SPIN SERVE' : 'FLAT SERVE', ball.pos, 0xffd166, 'big');
+  } else hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0 });
   return true;
 }
 
@@ -737,7 +777,9 @@ function update(dt) {
     if (s.kind === 'ai' && G.timer > (G.demo ? 0.8 : 1.3)) toss(s);
     if (s.kind === 'human' && s.control === 'racket' && G.timer > 0.4) {
       const now = performance.now();
-      if (s.hist.some((h) => now - h.t < 120 && h.up > 2.0 && h.up > Math.abs(h.fwd) * 1.5)) toss(s);
+      // With a calibrated toss, the lift only needs to be about half as quick as yours was.
+      const tossUp = s.shots?.toss ? clamp(s.shots.toss.peak * 0.5, 0.8, 2.5) : 2.0;
+      if (s.hist.some((h) => now - h.t < 120 && h.up > tossUp && h.up > Math.abs(h.fwd) * 1.3)) toss(s);
     }
   } else if (G.phase === 'toss') {
     stepBall(ball, dt);
@@ -826,6 +868,7 @@ const host = new Host({
     $(`p${slot}State`).textContent = 'Phone connected';
     $(`p${slot}Card`).classList.add('joined');
     if (!rejoin) { sfx.join(); callout(`P${slot} CONNECTED`, TEAM_COLORS[0], 'big'); }
+    host.send(slot, { t: 'game', name: 'tennis' });
     sendState();
   },
   onLeave(slot) {
@@ -843,7 +886,7 @@ const host = new Host({
       p.control = 'racket';
       p.racket = { h: new THREE.Vector3(...m.h), n: new THREE.Vector3(...m.n), v: new THREE.Vector3(...m.v) };
       const now = performance.now();
-      p.hist.push({ t: now, gt: G.time, fwd: -m.v[2], lat: m.v[0], up: m.v[1] });
+      p.hist.push({ t: now, gt: G.time, fwd: -m.v[2], lat: m.v[0], up: m.v[1], v: m.v, w: m.w || [0, 0, 0], h: m.h, n: m.n });
       while (p.hist.length && now - p.hist[0].t > 900) p.hist.shift();
     } else if (m.t === 'in') {
       p.control = 'tilt';
@@ -860,6 +903,12 @@ const host = new Host({
       p.profile = m;
       p.hand = m.hand === 'left' ? 'left' : 'right';
       if (changed && G.demo) callout(`P${slot} SWING CALIBRATED`, TEAM_COLORS[0], 'big');
+    } else if (m.t === 'shots') {
+      if (m.models && typeof m.models === 'object') {
+        p.shots = m.models;
+        const n = Object.keys(p.shots).length;
+        if (G.demo) callout(`P${slot}: ${n} SHOTS CALIBRATED`, TEAM_COLORS[0], 'big');
+      }
     } else if (m.t === 'start') {
       if (G.demo || G.phase === 'over') startMatch();
     }
