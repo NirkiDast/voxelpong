@@ -60,7 +60,7 @@ function onData(m) {
     $('you').textContent = m.you ?? 0;
     $('them').textContent = m.them ?? 0;
     $('startBtn').classList.toggle('hide', !(m.demo || m.mode === 'over'));
-    $('cue').textContent = m.serve ? 'YOUR SERVE: SWING!' : m.point === 'won' ? 'POINT!' : '';
+    $('cue').textContent = m.serve ? (state.mode === 'touch' ? 'YOUR SERVE: SWING!' : 'YOUR SERVE: TOSS UP, THEN SWING!') : m.point === 'won' ? 'POINT!' : '';
   }
 }
 

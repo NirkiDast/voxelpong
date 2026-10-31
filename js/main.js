@@ -342,13 +342,15 @@ function humanSwing(p, power, dir) {
   pl.swing = { t: G.time, p: power, d: dir };
   pl.swingAnim = 0;
   sfx.whoosh(power);
-  if (G.mode === 'serve' && G.server === p) serve(p, power, dir);
+  // Phone-racket players serve with a real toss and hit (see racketServe), not with a single swing.
+  if (G.mode === 'serve' && G.server === p) { if (pl.control !== 'racket') serve(p, power, dir); }
   else if (G.mode === 'over' && G.timer > 1.2) startGame();
 }
 
 function serve(p, power = 0.5, dir = 0) {
   const pl = players[p];
-  holdBall();
+  if (!G.toss) holdBall();
+  G.toss = null;
   const tx = clamp(pl.zs * dir * 0.45 + rnd(-0.2, 0.2), -0.6, 0.6);
   const tz = -pl.zs * rnd(0.55, 1.05);
   ball.vel.copy(computeShot(ball.pos, tx, tz, 3.6 + power * 1.6));
@@ -485,6 +487,7 @@ function nextServe() {
   G.server = deuce ? total % 2 : Math.floor(total / 2) % 2;
   G.mode = 'serve';
   G.timer = 0;
+  G.toss = null;
   ball.inPlay = false;
   ball.vel.set(0, 0, 0);
   holdBall();
@@ -492,7 +495,9 @@ function nextServe() {
   for (const p of players) { p.ai.plan = null; p.ai.swung = false; p.ai.timer = 0; }
   sendState();
   if (!G.demo) {
-    $('hint').textContent = G.split ? `P${G.server + 1} serve: swing!` : G.server === 0 ? 'Your serve: swing!' : 'AI serves';
+    const racket = players[G.server].control === 'racket';
+    const how = racket ? 'toss the ball up with the phone, then swing!' : 'swing!';
+    $('hint').textContent = G.split ? `P${G.server + 1} serve: ${how}` : G.server === 0 ? `Your serve: ${how}` : 'AI serves';
     $('hint').classList.remove('hide');
   }
 }
@@ -504,7 +509,21 @@ function holdBall() {
 }
 
 function stepBall(dt) {
-  if (G.mode === 'serve') return holdBall();
+  if (G.mode === 'serve') {
+    if (!G.toss) return holdBall();
+    // Tossed ball: straight up and down beside the server's paddle.
+    ball.vel.y -= GRAV * dt;
+    ball.pos.y += ball.vel.y * dt;
+    if (ball.vel.y < 0 && ball.pos.y < T.Y + 0.02) {
+      // Missed it: no fault, just toss again.
+      sfx.floor();
+      G.toss = null;
+      G.tossCool = G.time + 0.5;
+      ball.vel.set(0, 0, 0);
+      if (!G.demo) popup3D('TOSS AGAIN', ball.pos, 0xffffff, '', G.server);
+    }
+    return;
+  }
   const n = 4, h = dt / n;
   for (let k = 0; k < n; k++) {
     const prevZ = ball.pos.z;
@@ -597,6 +616,7 @@ function updateRacket(pl, dt) {
     pl.pos.z = damp(pl.pos.z, pl.zs * PZ, 10, dt);
   }
 
+  if (G.mode === 'serve' && G.server === pl.i) return racketServe(pl);
   if (!canHit(pl.i) || pl.resolvedShot === G.shotId) return;
   const dz = (ball.pos.z - pl.pos.z) * pl.zs; // < 0 while the ball is still in front of the paddle
   if (dz < -0.06) return;
@@ -638,6 +658,32 @@ function updateRacket(pl, dt) {
     pl.resolvedShot = G.shotId;
     if (settings.assist) performHit(pl.i, { power: 0.15, quality: 0.7, auto: true });
   }
+}
+
+// Serving with the phone: flick it upward to toss the ball, then swing forward to hit it.
+function racketServe(pl) {
+  const now = performance.now();
+  const prof = pl.profile;
+  const thr = prof ? prof.thr : 1.0, full = prof ? prof.full : 5.5;
+  if (!G.toss) {
+    if (G.time < (G.tossCool || 0) || G.timer < 0.4) return;
+    let lift = null;
+    for (const h of pl.hist) if (now - h.t < 120 && h.up > 1.3 && h.up > Math.abs(h.fwd) * 1.2 && (!lift || h.up > lift.up)) lift = h;
+    if (!lift) return;
+    G.toss = { t0: now, time: G.time };
+    ball.vel.set(0, clamp(1.7 + lift.up * 0.35, 2.1, 3.3), 0);
+    sfx.blip();
+    haptic(pl.i, 'join');
+    return;
+  }
+  // Ignore the toss motion itself; then any real forward swing hits the ball.
+  if (G.time - G.toss.time < 0.18) return;
+  let best = null;
+  for (const h of pl.hist) if (h.t > G.toss.t0 + 150 && now - h.t < 120 && (!best || h.fwd > best.fwd)) best = h;
+  if (!best || best.fwd <= thr) return;
+  const r = pl.racket;
+  const dir = clamp((r ? r.n.x * 1.3 : 0) + best.lat * 0.06, -1, 1);
+  serve(pl.i, clamp((best.fwd - thr) / (full - thr), 0, 1), dir);
 }
 
 function updateHuman(pl, dt) {
