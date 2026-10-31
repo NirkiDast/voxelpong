@@ -48,6 +48,9 @@ Optional: `?signal=host:port` points both pages at a self-hosted PeerJS server i
 - Swing calibration: 3 forehands and 3 backhands, each recorded while the thumb is held down. It learns the player's swing strength, timing window and wrist rotation for each side, and is saved on the phone
 - Full motion (AR), Android only: WebXR + ARCore track the phone's real position, so the paddle follows your hand left/right, up/down and forward/back, and you can whiff
 
+**Phase 2.6 (done): webcam tracking**
+- Optional "Webcam tracking" toggle in the lobby. MediaPipe Pose Landmarker (vendored in `vendor/mediapipe/`, Apache-2.0) runs locally on the PC and tracks each player's playing wrist and body position; the paddle follows it while the phone supplies angle and swing. Recenter on the phone re-homes the camera. Two players are told apart by which side of the room they stand on.
+
 **Phase 3: depth and polish**
 - Spin (topspin and backspin from swing direction, curve with the Magnus effect) and better swing classification (forehand, backhand, smash)
 - Proper serve rules, AI personalities, match stats and replays of great rallies
