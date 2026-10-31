@@ -50,6 +50,11 @@ function boot() {
 function onData(m) {
   if (!m) return;
   if (m.t === 'ping') link.sendFast({ t: 'pong', ts: m.ts });
+  else if (m.t === 'camcal') {
+    const txt = { raise: 'Camera: raise this hand above your head', still: 'Camera: hold the phone out in front, facing the TV, and keep still', done: 'Camera locked on your hand ✓' };
+    $('arNote').textContent = txt[m.step] || '';
+    if (m.step === 'done') { buzz('join'); setTimeout(() => { if ($('arNote').textContent === txt.done) $('arNote').textContent = ''; }, 2500); }
+  }
   else if (m.t === 'hap') { buzz(m.k, m.p); if (m.k === 'hit' || m.k === 'smash') flashHit(m.k === 'smash'); }
   else if (m.t === 'st') {
     $('you').textContent = m.you ?? 0;

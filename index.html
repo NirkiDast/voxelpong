@@ -70,6 +70,9 @@
   #soundHint { position: fixed; bottom: 12px; right: 12px; }
   #camBox { position: fixed; left: 12px; bottom: 12px; z-index: 6; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; background: #000; line-height: 0; }
   #camBox video { display: none; }
+  #camCal { position: fixed; left: 50%; top: 22%; transform: translateX(-50%); z-index: 7; width: min(900px, calc(100vw - 32px)); text-align: center; font-size: clamp(14px, 2.2vw, 24px); line-height: 1.6; color: #fff; text-shadow: 0 0 12px var(--p1), 0 0 30px var(--p1); background: rgba(7,5,26,0.88) !important; padding: 18px; border-radius: 14px; pointer-events: none; }
+  #camCal div + div { margin-top: 12px; }
+  button.mini { padding: 3px 8px; font-size: 11px; margin-left: 6px; }
   #camBox canvas { width: 240px; height: 180px; }
   #camBox.small canvas { width: 120px; height: 90px; }
 </style>
@@ -109,7 +112,7 @@
           </div>
         </div>
         <label><input type="checkbox" id="assist" checked> Aim assist (auto height + soft blocks)</label>
-        <label><input type="checkbox" id="camTrack"> Webcam tracking (camera follows your arm)</label>
+        <div><label><input type="checkbox" id="camTrack"> Webcam tracking (camera follows your arm)</label><button id="camCalBtn" class="mini">Calibrate camera</button></div>
         <div id="camStatus" class="pstate"></div>
         <button id="btnStart">START</button>
       </div>
@@ -140,6 +143,7 @@
   </div>
 </div>
 
+<div id="camCal" class="px hide"></div>
 <div id="camBox" class="hide" title="Click to resize"><video id="camVideo" playsinline muted></video><canvas id="camCanvas" width="240" height="180"></canvas></div>
 <pre id="diag" class="hide"></pre>
 <div class="topbar"><span id="fps" class="pill"></span><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>

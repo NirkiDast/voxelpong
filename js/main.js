@@ -201,6 +201,7 @@ const host = new Host({
       p.hist.push({ t: now, fwd: -m.v[2], lat: m.v[0], up: m.v[1], w: Array.isArray(m.w) ? m.w : null });
       while (p.hist.length && now - p.hist[0].t > 400) p.hist.shift();
       if (i === 0) lastPhoneInput = now;
+      if (cam) cam.feedPhone(i, p.racket.v);
     } else if (m.t === 'in') {
       p.control = 'tilt';
       p.input.x = clamp(+m.x || 0, -1.5, 1.5);
@@ -224,14 +225,13 @@ const host = new Host({
         fh: Array.isArray(m.fh) ? m.fh : null, bh: Array.isArray(m.bh) ? m.bh : null,
         hand: m.hand === 'left' ? 'left' : 'right',
       };
-      if (cam) cam.hand[i] = p.profile.hand;
       if (p.profile.full < p.profile.thr * 1.5) p.profile.full = p.profile.thr * 1.5;
       popupScreen(`P${slot} SWING CALIBRATED`, p.color.getHex());
       $(`p${slot}State`).textContent = 'Phone connected · swings calibrated';
     } else if (m.t === 'cal') {
       $(`p${slot}State`).textContent = m.state === 'start' ? 'Calibrating swings…' : (p.profile ? 'Phone connected · swings calibrated' : 'Phone connected');
     } else if (m.t === 'recenter') {
-      cam?.recenter(i);
+      cam?.calibrate(i);
     } else if (m.t === 'diag') {
       diag.phone[i] = m;
     } else if (m.t === 'start') {
@@ -801,7 +801,11 @@ function startGame() {
   boards.forEach((b) => b.set(0, 0));
   G.server = 0;
   G.timeScale = 1;
-  if (cam) { cam.players = G.split ? 2 : 1; cam.recenter(); }
+  if (cam) {
+    cam.players = G.split ? 2 : 1;
+    const need = players.filter((p) => p.kind === 'human' && !cam.calibrated(p.i) && !cam.calibrating(p.i)).map((p) => p.i);
+    need.forEach((i) => cam.calibrate(i));
+  }
   $('lobby').classList.add('hide');
   $('overPanel').classList.add('hide');
   $('hud').classList.remove('hide');
@@ -848,11 +852,11 @@ async function setCamTracking(on) {
   try {
     const { CamTracker } = await import('./camtrack.js');
     if (!$('camTrack').checked) return;
-    const t = new CamTracker({ video: $('camVideo'), canvas: $('camCanvas'), onStatus: status });
+    const t = new CamTracker({ video: $('camVideo'), canvas: $('camCanvas'), onStatus: status, onCalib: showCamCal });
     t.players = settings.mode === '2p' ? 2 : 1;
-    t.hand = players.map((p) => (p.profile && p.profile.hand) || 'right');
     cam = t;
     await t.start();
+    t.calibrate();
     if (!$('camTrack').checked) { t.stop(); if (cam === t) cam = null; }
   } catch (err) {
     console.warn('camera tracking', err);
@@ -863,6 +867,28 @@ async function setCamTracking(on) {
   }
 }
 $('camTrack').addEventListener('change', (e) => setCamTracking(e.target.checked));
+$('camCalBtn').addEventListener('click', () => { if (cam) cam.calibrate(); else { $('camTrack').checked = true; setCamTracking(true); } });
+
+// Camera calibration prompts, shown big on the TV and mirrored on the phone.
+const CAM_CAL_TEXT = {
+  raise: 'RAISE THE HAND HOLDING YOUR PHONE ABOVE YOUR HEAD',
+  still: 'NOW HOLD IT OUT IN FRONT OF YOU, FACING THE TV, AND KEEP STILL',
+  done: 'CAMERA LOCKED ON',
+};
+const camCalState = [null, null];
+let camCalTimer = 0;
+function showCamCal(i, step) {
+  camCalState[i] = step === 'done' ? null : step;
+  host.send(i + 1, { t: 'camcal', step });
+  if (step === 'done') sfx.join();
+  const lines = camCalState.map((st, j) => (st ? `${cam && cam.players === 2 ? `P${j + 1}: ` : ''}${CAM_CAL_TEXT[st]}` : null)).filter(Boolean);
+  clearTimeout(camCalTimer);
+  if (lines.length) { $('camCal').innerHTML = lines.map((l) => `<div>${l}</div>`).join(''); $('camCal').classList.remove('hide'); }
+  else {
+    $('camCal').innerHTML = `<div>${CAM_CAL_TEXT.done}</div>`;
+    camCalTimer = setTimeout(() => $('camCal').classList.add('hide'), 1200);
+  }
+}
 $('camBox').addEventListener('click', () => $('camBox').classList.toggle('small'));
 try { if (localStorage.getItem('vxpp-cam') === '1') { $('camTrack').checked = true; setCamTracking(true); } } catch { /* ignore */ }
 function selectMode(mode) {

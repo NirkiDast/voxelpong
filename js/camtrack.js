@@ -12,11 +12,10 @@ const LOOKAHEAD = 0.07;    // seconds of extrapolation to hide camera + inferenc
 const STALE_MS = 250;
 
 export class CamTracker {
-  constructor({ video, canvas, onStatus }) {
-    Object.assign(this, { video, canvas, onStatus });
+  constructor({ video, canvas, onStatus, onCalib }) {
+    Object.assign(this, { video, canvas, onStatus, onCalib });
     this.ctx = canvas.getContext('2d');
     this.players = 1;
-    this.hand = ['right', 'right'];
     this.tracks = [this.blank(), this.blank()];
     this.running = false;
     this.fps = 0;
@@ -24,7 +23,7 @@ export class CamTracker {
   }
 
   blank() {
-    return { raw: null, home: null, pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, t: 0, wantHome: true, lm: null };
+    return { home: null, pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, t: 0, seenT: 0, wantHome: true, lm: null, wr: 0, wImg: null, prevLm: null, vote: 0, cal: null };
   }
 
   async start() {
@@ -101,27 +100,58 @@ export class CamTracker {
     if (seen !== this.lastStatus) { this.lastStatus = seen; this.onStatus(seen); }
   }
 
+  // Which wrist is the racket hand. MediaPipe sometimes swaps its left/right labels (especially when
+  // you turn sideways to swing), so after calibration we follow the hand by continuity instead of by
+  // label, and double-check it against the phone's own motion.
+  pickWrist(tr, lm, now) {
+    const a = lm[L_WR], b = lm[R_WR];
+    if (tr.wImg && now - tr.t < 300) {
+      const da = Math.hypot(a.x - tr.wImg.x, a.y - tr.wImg.y), db = Math.hypot(b.x - tr.wImg.x, b.y - tr.wImg.y);
+      // Wrists right on top of each other: keep the previous label rather than flip-flopping.
+      if (Math.abs(da - db) < 0.02) return tr.wr;
+      return da < db ? L_WR : R_WR;
+    }
+    return tr.wr;
+  }
+
   update(i, { lm, wl }, now) {
     const tr = this.tracks[i];
-    const right = this.hand[i] !== 'left';
-    const wr = right ? R_WR : L_WR;
-    if ((lm[wr].visibility ?? 1) < 0.3) return;
+    const aspect = (this.video.videoHeight || 3) / (this.video.videoWidth || 4);
     const sw = Math.max(0.02, shoulderW(lm));
     const k = SHOULDER_M / sw;
     const mx = midX(lm), my = (lm[L_SH].y + lm[R_SH].y) / 2;
+    tr.lm = lm;
+    tr.seenT = now;
+
+    if (tr.cal) { this.stepCalibration(i, tr, lm, k, aspect, now); return; }
+    if (!tr.wr) return; // never calibrated: wait for calibration
+
+    let wr = this.pickWrist(tr, lm, now);
+    // Phone check: the racket hand moves the way the phone moves. Compare both wrists' motion with the
+    // phone's (from about a camera-delay ago) and switch if the other hand clearly matches better.
+    const other = wr === L_WR ? R_WR : L_WR;
+    if (tr.prevLm && now - tr.t < 100) {
+      const ph = this.phoneVel(i, now - 80);
+      if (ph) {
+        const dt = Math.max(0.01, (now - tr.t) / 1000);
+        const vel = (idx) => ({ x: -(lm[idx].x - tr.prevLm[idx].x) * k / dt, y: -(lm[idx].y - tr.prevLm[idx].y) * k * aspect / dt });
+        const m1 = vel(wr), m2 = vel(other);
+        const sp = Math.hypot(ph.x, ph.y);
+        if (sp > 0.6) {
+          const s1 = (m1.x * ph.x + m1.y * ph.y) / sp, s2 = (m2.x * ph.x + m2.y * ph.y) / sp;
+          tr.vote = Math.max(-12, Math.min(14, tr.vote * 0.92 + (s2 - s1)));
+          if (tr.vote > 12) { wr = other; tr.vote = 0; }
+        } else tr.vote *= 0.97;
+      }
+    }
+    tr.prevLm = lm;
+    if ((lm[wr].visibility ?? 1) < 0.2) { tr.wr = wr; return; }
+
     // Body position across the room (from where the shoulders are in the frame) plus hand offset from
     // the shoulders. The camera is not mirrored, so image-left is the player's right.
-    const raw = {
-      bx: -(mx - 0.5) * k,
-      hx: -(lm[wr].x - mx) * k,
-      hy: -(lm[wr].y - my) * k * ((this.video.videoHeight || 3) / (this.video.videoWidth || 4)),
-      hz: 0,
-    };
-    if (wl && wl[wr] && wl[L_SH] && wl[R_SH]) {
-      // World landmarks are metres around the hips; negative z points at the camera.
-      raw.hz = wl[wr].z - (wl[L_SH].z + wl[R_SH].z) / 2;
-    }
-    const cur = { x: raw.bx + raw.hx, y: raw.hy, z: raw.hz };
+    let hz = 0;
+    if (wl && wl[wr] && wl[L_SH] && wl[R_SH]) hz = wl[wr].z - (wl[L_SH].z + wl[R_SH].z) / 2; // metres, -z = toward camera
+    const cur = { x: -(mx - 0.5) * k - (lm[wr].x - mx) * k, y: -(lm[wr].y - my) * k * aspect, z: hz };
     if (tr.wantHome || !tr.home) { tr.home = { ...cur }; tr.wantHome = false; tr.pos = { x: 0, y: 0, z: 0 }; tr.vel = { x: 0, y: 0, z: 0 }; tr.t = now; }
     const rel = { x: cur.x - tr.home.x, y: cur.y - tr.home.y, z: (cur.z - tr.home.z) * 0.8 };
     const dt = Math.max(0.005, (now - tr.t) / 1000);
@@ -137,14 +167,76 @@ export class CamTracker {
       }
     }
     tr.t = now;
-    tr.lm = lm;
     tr.wr = wr;
+    tr.wImg = { x: lm[wr].x, y: lm[wr].y };
+  }
+
+  // ---- Calibration: 1) raise the phone hand above your head, 2) hold it out in front, still. ----
+  calibrate(i) {
+    const idx = i == null ? [...Array(this.players).keys()] : [i];
+    idx.forEach((j) => {
+      const tr = this.tracks[j];
+      tr.cal = { stage: 'raise', since: 0, cand: 0 };
+      tr.wImg = null; tr.home = null; tr.vote = 0;
+      this.onCalib?.(j, 'raise');
+    });
+  }
+
+  calibrating(i) { return !!this.tracks[i]?.cal; }
+  calibrated(i) { return !!this.tracks[i]?.wr && !this.tracks[i]?.cal; }
+
+  stepCalibration(i, tr, lm, k, aspect, now) {
+    const c = tr.cal;
+    if (c.stage === 'raise') {
+      // A wrist clearly above the nose (in image y, smaller is higher) counts as raised.
+      const head = lm[0].y;
+      const up = [L_WR, R_WR].filter((w) => lm[w].y < head - 0.03 && (lm[w].visibility ?? 1) > 0.3);
+      const cand = up.length === 1 ? up[0] : 0; // both hands up is ambiguous
+      if (cand && cand === c.cand) {
+        if (now - c.since > 500) {
+          tr.wr = cand;
+          tr.wImg = { x: lm[cand].x, y: lm[cand].y };
+          tr.t = now;
+          c.stage = 'still'; c.since = now; c.last = { ...tr.wImg };
+          this.onCalib?.(i, 'still');
+        }
+      } else { c.cand = cand; c.since = now; }
+      return;
+    }
+    // Stage 'still': follow the hand by continuity until it has stayed put for 0.7 s.
+    const wr = this.pickWrist(tr, lm, now);
+    const p = { x: lm[wr].x, y: lm[wr].y };
+    const moved = Math.hypot(p.x - c.last.x, p.y - c.last.y);
+    const belowHead = p.y > lm[0].y + 0.05;
+    if (moved > 0.025 || !belowHead) { c.since = now; c.last = p; }
+    tr.wr = wr; tr.wImg = p; tr.t = now; tr.prevLm = lm;
+    if (belowHead && now - c.since > 700) {
+      tr.cal = null;
+      tr.wantHome = true;
+      this.onCalib?.(i, 'done');
+    }
+  }
+
+  // Phone racket velocity history (player space), fed by main.js from the phone's 'r' messages.
+  feedPhone(i, v) {
+    const h = (this.phone ||= [[], []])[i];
+    const now = performance.now();
+    h.push({ t: now, x: v.x, y: v.y });
+    while (h.length && now - h[0].t > 400) h.shift();
+  }
+
+  phoneVel(i, at) {
+    const h = this.phone?.[i];
+    if (!h || !h.length) return null;
+    let best = null;
+    for (const s of h) if (!best || Math.abs(s.t - at) < Math.abs(best.t - at)) best = s;
+    return Math.abs(best.t - at) < 60 ? best : null;
   }
 
   // Predicted hand position for player i, or null when nobody is tracked for that slot.
   get(i) {
     const tr = this.tracks[i];
-    if (!this.running || !tr.home) return null;
+    if (!this.running || !tr.home || tr.cal) return null;
     const age = performance.now() - tr.t;
     if (age > STALE_MS) return null;
     const la = Math.min(LOOKAHEAD + age / 1000, 0.12);
@@ -175,15 +267,16 @@ export class CamTracker {
     ctx.globalAlpha = 1;
     const colors = ['#3ef0ff', '#ff4fd8'];
     this.tracks.forEach((tr, i) => {
-      if (!tr.lm || performance.now() - tr.t > STALE_MS) return;
+      if (!tr.lm || performance.now() - tr.seenT > STALE_MS) return;
       const lm = tr.lm;
       ctx.strokeStyle = colors[i];
       ctx.lineWidth = 2;
       const seg = (a, b) => { ctx.beginPath(); ctx.moveTo(lm[a].x * w, lm[a].y * h); ctx.lineTo(lm[b].x * w, lm[b].y * h); ctx.stroke(); };
       seg(L_SH, R_SH); seg(L_SH, L_EL); seg(L_EL, L_WR); seg(R_SH, R_EL); seg(R_EL, R_WR);
+      if (!tr.wr) return;
       ctx.fillStyle = colors[i];
       ctx.beginPath();
-      ctx.arc(lm[tr.wr].x * w, lm[tr.wr].y * h, 7, 0, Math.PI * 2);
+      ctx.arc(lm[tr.wr].x * w, lm[tr.wr].y * h, tr.cal ? 5 : 8, 0, Math.PI * 2);
       ctx.fill();
     });
     ctx.restore();
@@ -192,7 +285,7 @@ export class CamTracker {
     ctx.fillStyle = '#cfe';
     ctx.font = '11px ui-monospace, monospace';
     const names = this.players === 2 ? ['P1', 'P2'] : ['YOU'];
-    const st = names.map((n, i) => `${n} ${this.tracked(i) ? '✓' : '–'}`).join('  ');
+    const st = names.map((n, i) => `${n} ${this.tracks[i].cal ? 'calibrating' : this.tracked(i) ? '✓' : '–'}`).join('  ');
     ctx.fillText(`${st}   ${Math.round(this.fps)} fps · ${Math.round(this.latency)} ms`, 6, h - 5);
     void res;
   }
