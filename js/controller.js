@@ -405,6 +405,7 @@ $('holdPad').addEventListener('pointerdown', (e) => {
   if (st.key === 'center') {
     if (!qDev) { renderCal('Waiting for motion sensors…'); return; }
     calibrate();
+    link?.send({ t: 'recenter' });
     buzz('join');
     cal.step = 1;
     renderCal();
@@ -550,7 +551,7 @@ $('modeBtn').addEventListener('click', () => {
   if (state.mode === 'touch') enableMotion();
   else { state.mode = 'touch'; startPlay(); }
 });
-$('calBtn').addEventListener('click', () => { calibrate(); buzz('join'); });
+$('calBtn').addEventListener('click', () => { calibrate(); link?.send({ t: 'recenter' }); buzz('join'); });
 $('startBtn').addEventListener('click', () => link?.send({ t: 'start' }));
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && wakeLock !== null) {

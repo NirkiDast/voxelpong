@@ -28,6 +28,7 @@ const AI_LEVELS = {
   hard:   { speed: 3.6, err: 0.035, react: 0.1, power: [0.55, 0.95], reach: 0.2, miss: 0.04, sloppy: 0.2 },
 };
 const settings = { level: 'medium', assist: true, mode: '1p' };
+let cam = null; // webcam hand tracker (js/camtrack.js), loaded only when switched on
 
 // ---------- Renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -221,12 +222,16 @@ const host = new Host({
       p.profile = {
         thr: clamp(+m.thr || 1, 0.4, 4), full: clamp(+m.full || 5.5, 1.5, 15), win: clamp(+m.win || 170, 120, 260),
         fh: Array.isArray(m.fh) ? m.fh : null, bh: Array.isArray(m.bh) ? m.bh : null,
+        hand: m.hand === 'left' ? 'left' : 'right',
       };
+      if (cam) cam.hand[i] = p.profile.hand;
       if (p.profile.full < p.profile.thr * 1.5) p.profile.full = p.profile.thr * 1.5;
       popupScreen(`P${slot} SWING CALIBRATED`, p.color.getHex());
       $(`p${slot}State`).textContent = 'Phone connected · swings calibrated';
     } else if (m.t === 'cal') {
       $(`p${slot}State`).textContent = m.state === 'start' ? 'Calibrating swings…' : (p.profile ? 'Phone connected · swings calibrated' : 'Phone connected');
+    } else if (m.t === 'recenter') {
+      cam?.recenter(i);
     } else if (m.t === 'diag') {
       diag.phone[i] = m;
     } else if (m.t === 'start') {
@@ -573,7 +578,8 @@ function updateRacket(pl, dt) {
   } else if (G.mode === 'serve' && G.server === pl.i) {
     tx = 0; ty = T.Y + 0.14;
   }
-  const arP = pl.racket && pl.racket.p;
+  // Hand position: from the phone's AR tracking if it has it, otherwise from the webcam.
+  const arP = (pl.racket && pl.racket.p) || (cam && pl.kind === 'human' ? cam.get(pl.i) : null);
   if (arP) {
     let ax = arP.x * AR_GAIN.x * pl.zs, ay = T.Y + 0.22 + arP.y * AR_GAIN.y;
     const az = pl.zs * (PZ + clamp(arP.z * AR_GAIN.z, -0.45, 0.45));
@@ -603,7 +609,9 @@ function updateRacket(pl, dt) {
   const d = Math.hypot(ball.pos.x - pl.pos.x, ball.pos.y - pl.pos.y);
   const quality = clamp(1 - d / 0.3, 0.3, 1);
   // With real position tracking you can whiff: the ball has to actually be near the paddle.
-  const reach = arP ? (settings.assist ? 0.26 : 0.17) : Infinity;
+  // Camera tracking is a little noisier than AR, so it gets a slightly bigger sweet spot.
+  const camP = !(pl.racket && pl.racket.p);
+  const reach = arP ? (settings.assist ? (camP ? 0.3 : 0.26) : (camP ? 0.2 : 0.17)) : Infinity;
   if (d > reach) {
     if (dz > 0.12) pl.resolvedShot = G.shotId;
     return;
@@ -793,6 +801,7 @@ function startGame() {
   boards.forEach((b) => b.set(0, 0));
   G.server = 0;
   G.timeScale = 1;
+  if (cam) { cam.players = G.split ? 2 : 1; cam.recenter(); }
   $('lobby').classList.add('hide');
   $('overPanel').classList.add('hide');
   $('hud').classList.remove('hide');
@@ -824,11 +833,44 @@ document.querySelectorAll('[data-level]').forEach((b) => b.addEventListener('cli
   sfx.blip();
 }));
 $('assist').addEventListener('change', (e) => { settings.assist = e.target.checked; });
+
+// ---------- Webcam tracking (optional) ----------
+async function setCamTracking(on) {
+  const status = (t) => { $('camStatus').textContent = t; };
+  try { localStorage.setItem('vxpp-cam', on ? '1' : '0'); } catch { /* private mode */ }
+  if (!on) {
+    cam?.stop(); cam = null;
+    $('camBox').classList.add('hide');
+    status('');
+    return;
+  }
+  $('camBox').classList.remove('hide');
+  try {
+    const { CamTracker } = await import('./camtrack.js');
+    if (!$('camTrack').checked) return;
+    const t = new CamTracker({ video: $('camVideo'), canvas: $('camCanvas'), onStatus: status });
+    t.players = settings.mode === '2p' ? 2 : 1;
+    t.hand = players.map((p) => (p.profile && p.profile.hand) || 'right');
+    cam = t;
+    await t.start();
+    if (!$('camTrack').checked) { t.stop(); if (cam === t) cam = null; }
+  } catch (err) {
+    console.warn('camera tracking', err);
+    if (!/Camera blocked|No webcam/.test($('camStatus').textContent)) status('Camera tracking failed to start');
+    cam?.stop(); cam = null;
+    $('camTrack').checked = false;
+    $('camBox').classList.add('hide');
+  }
+}
+$('camTrack').addEventListener('change', (e) => setCamTracking(e.target.checked));
+$('camBox').addEventListener('click', () => $('camBox').classList.toggle('small'));
+try { if (localStorage.getItem('vxpp-cam') === '1') { $('camTrack').checked = true; setCamTracking(true); } } catch { /* ignore */ }
 function selectMode(mode) {
   settings.mode = mode;
   document.querySelectorAll('[data-mode]').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
   $('aiOpts').classList.toggle('hide', mode === '2p');
   $('p2Card').classList.toggle('soon', mode !== '2p');
+  if (cam) cam.players = mode === '2p' ? 2 : 1;
 }
 document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => { selectMode(b.dataset.mode); sfx.blip(); }));
 
@@ -919,6 +961,7 @@ function renderDiag(fps) {
       (ph ? ` · phone sensors ${ph.ori}/s orientation, ${ph.mot}/s motion, gyro ${ph.gyro ? 'on' : 'off'}, sent ${ph.sent}/s, ${ph.mode}` : ''));
     if (ph?.ua) lines.push(`    ${ph.ua}`);
   });
+  if (cam) lines.push(`Webcam: ${Math.round(cam.fps)} fps tracking, ${Math.round(cam.latency)} ms per frame · ${[0, 1].map((i) => `P${i + 1} ${cam.tracked(i) ? 'seen' : 'not seen'}`).join(', ')}`);
   $('diag').textContent = lines.join('\n');
 }
 function trackPerf() {

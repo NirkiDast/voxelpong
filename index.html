@@ -68,6 +68,10 @@
   #fps { cursor: pointer; }
   #diag { position: fixed; top: 52px; right: 12px; max-width: min(760px, calc(100vw - 24px)); margin: 0; padding: 10px 12px; background: rgba(0,0,0,0.75); border: 1px solid var(--line); border-radius: 10px; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; color: #cfe; z-index: 5; }
   #soundHint { position: fixed; bottom: 12px; right: 12px; }
+  #camBox { position: fixed; left: 12px; bottom: 12px; z-index: 6; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; background: #000; line-height: 0; }
+  #camBox video { display: none; }
+  #camBox canvas { width: 240px; height: 180px; }
+  #camBox.small canvas { width: 120px; height: 90px; }
 </style>
 <script type="importmap">
 { "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/addons/" } }
@@ -105,6 +109,8 @@
           </div>
         </div>
         <label><input type="checkbox" id="assist" checked> Aim assist (auto height + soft blocks)</label>
+        <label><input type="checkbox" id="camTrack"> Webcam tracking (camera follows your arm)</label>
+        <div id="camStatus" class="pstate"></div>
         <button id="btnStart">START</button>
       </div>
     </div>
@@ -134,6 +140,7 @@
   </div>
 </div>
 
+<div id="camBox" class="hide" title="Click to resize"><video id="camVideo" playsinline muted></video><canvas id="camCanvas" width="240" height="180"></canvas></div>
 <pre id="diag" class="hide"></pre>
 <div class="topbar"><span id="fps" class="pill"></span><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>
 <div id="soundHint" class="pill">Click anywhere to enable sound</div>
