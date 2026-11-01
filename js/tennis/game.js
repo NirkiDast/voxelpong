@@ -163,9 +163,20 @@ const G = {
 function netHeightAt(x) {
   return C.NET_H + (C.POST_H - C.NET_H) * Math.pow(Math.min(1, Math.abs(x) / (C.HW + 0.45)), 2);
 }
+// Each ground stroke has its own character in the air and off the bounce.
+//  g: extra downward pull (topspin dives, slice floats)   speed: pace multiplier
+//  margin: how high over the net it aims   bounceY/bounceF: bounce height and how much pace it keeps
+const KINDS = {
+  flat:  { g: 0,    speed: 1.18, margin: 0.14, bounceY: -0.04,  bounceF: 0.93, trail: 0xffffff, ballSpin: 6 },
+  top:   { g: 9,    speed: 1.0,  margin: 1.2,  bounceY: 0.06,  bounceF: 0.97, trail: 0xffb347, ballSpin: 34 },
+  slice: { g: -4.5, speed: 0.74, margin: 0.28, bounceY: -0.22, bounceF: 0.62, trail: 0x6ad7ff, ballSpin: -26 },
+  lob:   { g: 1.5,  speed: 1,    margin: 1.5,  bounceY: 0.08,  bounceF: 0.8,  trail: 0xd59bff, ballSpin: 12 },
+  drop:  { g: -3,   speed: 1,    margin: 0.6,  bounceY: -0.45, bounceF: 0.2,  trail: 0x8dffb0, ballSpin: -30 },
+};
+const gravOf = (kind, spin) => TUNE.gravity + (KINDS[kind] ? KINDS[kind].g : spin * 4.0);
 // Advances b by dt. Returns 'bounce', 'net' or null.
 function stepBall(b, dt) {
-  const g = TUNE.gravity + b.spin * 4.0;
+  const g = gravOf(b.kind, b.spin);
   const pz = b.pos.z;
   b.vel.y -= g * dt;
   if (b.side) b.vel.x += b.side * dt;           // sidespin curve (slice serve)
@@ -181,10 +192,12 @@ function stepBall(b, dt) {
   if (b.pos.y < C.R && b.vel.y < 0) {
     b.pos.y = C.R;
     const top = b.spin > 0, slice = b.spin < 0;
-    b.vel.y = -b.vel.y * (TUNE.bounce + (slice ? -0.13 : top ? 0.06 : 0));
-    const f = slice ? 0.72 : top ? 0.9 : 0.82;
+    const K = KINDS[b.kind];
+    b.vel.y = -b.vel.y * Math.max(0.15, TUNE.bounce + (K ? K.bounceY : slice ? -0.13 : top ? 0.06 : 0));
+    const f = K ? K.bounceF : slice ? 0.72 : top ? 0.9 : 0.82;
     b.vel.x *= f;
     b.vel.z *= f;
+    b.kind = null;                                   // after the first bounce it's just a ball
     if (b.kick) { b.vel.y *= 1.3; b.vel.x += b.kick; b.kick = 0; }   // kick serve: jumps up and away
     if (b.side) { b.vel.x += b.side * 0.12; b.side = 0; }            // slice serve skids on
     b.spin *= 0.4;
@@ -194,7 +207,7 @@ function stepBall(b, dt) {
 }
 
 function predict(maxT = 4) {
-  const b = { pos: ball.pos.clone(), vel: ball.vel.clone(), spin: ball.spin, side: ball.side, kick: ball.kick };
+  const b = { pos: ball.pos.clone(), vel: ball.vel.clone(), spin: ball.spin, side: ball.side, kick: ball.kick, kind: ball.kind };
   const out = [];
   const h = 1 / 120;
   let bounces = 0, firstBounce = null;
@@ -207,8 +220,8 @@ function predict(maxT = 4) {
 }
 
 // Velocity that sends a ball from p to land at (tx, tz) with flight time T, raised until it clears the net.
-function shotVelocity(p, tx, tz, T, spin, netMargin = 0.35) {
-  const g = TUNE.gravity + spin * 4.0;
+function shotVelocity(p, tx, tz, T, spin, netMargin = 0.35, kind = null) {
+  const g = gravOf(kind, spin);
   const v = new THREE.Vector3();
   for (let k = 0; k < 30; k++) {
     const dragK = 1 + DRAG * T * 0.5;
@@ -315,7 +328,7 @@ function setupServe() {
   G.serveBox = box;
   G.phase = 'serve';
   G.timer = 0;
-  ball.live = false; ball.serve = false; ball.held = true; ball.netTouch = false; ball.bounces = 0; ball.spin = 0; ball.side = 0; ball.kick = 0;
+  ball.live = false; ball.serve = false; ball.held = true; ball.netTouch = false; ball.bounces = 0; ball.spin = 0; ball.side = 0; ball.kick = 0; ball.kind = null;
   ball.vel.set(0, 0, 0);
   trail.clear();
   renderScore();
@@ -346,7 +359,7 @@ function toss(s) {
   G.tossPath = [];
   ball.held = false;
   ball.vel.set(0, Math.sqrt(2 * TUNE.gravity * 1.95), 0);  // same toss height whatever the gravity
-  ball.spin = 0; ball.side = 0; ball.kick = 0;
+  ball.spin = 0; ball.side = 0; ball.kick = 0; ball.kind = null;
   // Where the toss will peak: hitting right there is a PERFECT serve.
   const sim = { pos: ball.pos.clone(), vel: ball.vel.clone(), spin: 0 };
   while (sim.vel.y > 0) stepBall(sim, 1 / 240);
@@ -371,6 +384,7 @@ function hitServe(s, power, { spin = 0, aim = 0, kind = null, contactY = ball.po
   const side = kind === 'spin' ? away * 7 : 0;
   ball.vel.copy(shotVelocity(ball.pos, tx - 0.5 * side * T * T, tz, T, spin, 0.1 + q * 0.25 - err * 0.12));
   ball.spin = spin;
+  ball.kind = null;
   ball.side = side;
   ball.kick = kind === 'kick' ? -away * 2.2 : 0;
   ball.live = true; ball.serve = true; ball.netTouch = false; ball.bounces = 0;
@@ -442,35 +456,44 @@ function planReceivers() {
   p.swingSide = fore ? 1 : -1;
 }
 
-function hitBall(p, { power, aim = 0, spin = 0, lob = false, drop = false, quality = 1 }) {
+function hitBall(p, { power, aim = 0, spin = 0, lob = false, drop = false, quality = 1, kind = null }) {
   const sg = sideOf(p.team);
   const err = (1 - quality) * 2.2;
   const hw = courtHW();
+  kind = lob ? 'lob' : drop ? 'drop' : kind || (spin > 0.2 ? 'top' : spin < -0.2 ? 'slice' : 'flat');
+  const K = KINDS[kind];
   let tx = clamp(aim * (hw - 0.9), -(hw - 0.6), hw - 0.6) + rnd(-1, 1) * err;
   let tz, T;
-  if (lob) {
-    tz = -sg * (C.HL - 1.6 - rnd(0, 1.5)) - sg * rnd(-0.6, 0.6) * err;
-    T = TUNE.lobTime;
-  } else if (drop) {
-    // Just over the net and dying: short, soft, with backspin.
-    tz = -sg * (1.4 + rnd(0, 1.4) + err * 0.6);
+  if (kind === 'lob') {
+    // High and deep: well over anyone at the net, landing near the baseline.
+    tz = -sg * (C.HL - 1.2 - rnd(0, 1.3)) - sg * rnd(-0.6, 0.6) * err;
+    T = TUNE.lobTime * 1.3;
+  } else if (kind === 'drop') {
+    // Floats just over the net and dies: short, soft, heavy backspin.
+    tz = -sg * (1.0 + rnd(0, 1.2) + err * 0.6);
     const dist = Math.hypot(tx - ball.pos.x, tz - ball.pos.z);
-    T = Math.max(0.75, dist / 10);
+    T = Math.max(1.0, dist / 10);
   } else {
-    tz = -sg * (C.HL - 1.4 - (1 - power) * 5.2) - sg * rnd(-0.5, 0.8) * err;
+    // Topspin can be hit deep and still dive in; slice floats and sits a bit shorter; flat goes deep and low.
+    const depth = kind === 'top' ? 1.0 : kind === 'slice' ? 2.0 : 1.3;
+    tz = -sg * (C.HL - depth - (1 - power) * 5.2) - sg * rnd(-0.5, 0.8) * err;
     const dist = Math.hypot(tx - ball.pos.x, tz - ball.pos.z);
-    T = dist / lerp(TUNE.shotMin, TUNE.shotMax, power);
-    if (spin > 0) T *= 1.12;
-    if (spin < 0) T *= 1.15;
+    T = dist / (lerp(TUNE.shotMin, TUNE.shotMax, power) * K.speed);
   }
-  ball.vel.copy(shotVelocity(ball.pos, tx, tz, T, lob ? 0 : spin, drop ? 0.12 : 0.25 + quality * 0.2 - err * 0.15));
-  ball.spin = lob ? 0 : spin;
-  ball.side = 0; ball.kick = 0;
+  // A slice drifts a little toward the side it was aimed at.
+  const side = kind === 'slice' ? Math.sign(tx - ball.pos.x || rnd(-1, 1)) * 0.9 : 0;
+  ball.vel.copy(shotVelocity(ball.pos, tx - 0.5 * side * T * T, tz, T, spin, K.margin + quality * 0.15 - err * 0.12, kind));
+  ball.kind = kind;
+  ball.spin = kind === 'top' ? Math.max(spin, 0.5) : kind === 'slice' || kind === 'drop' ? -0.6 : 0;
+  ball.side = side;
+  ball.kick = 0;
+  trail.color.set(K.trail);
   ball.live = true; ball.serve = false; ball.bounces = 0; ball.netTouch = false;
   ball.lastTeam = p.team; ball.lastHitter = p.i;
   G.shots++;
   p.plan = null;
-  hitFx(p, power, power > 0.85 && ball.pos.y > 1.6);
+  hitFx(p, kind === 'drop' ? 0.15 : kind === 'flat' ? Math.min(1, power * 1.15) : power, power > 0.85 && ball.pos.y > 1.6 && kind !== 'drop' && kind !== 'lob');
+  trail.color.set(K.trail);
   planReceivers();
 }
 
@@ -483,10 +506,15 @@ function aiHit(p) {
   const opp = players.filter((o) => o.team !== p.team && active(o));
   const gapX = -Math.sign(opp.reduce((a, o) => a + o.pos.x, 0) || rnd(-1, 1));
   const aim = clamp(gapX * rnd(0.3, 0.9) + rnd(-0.3, 0.3), -0.95, 0.95);
-  const lob = !p.plan.volley && Math.random() < 0.06;
+  // Shot choice: lob a net rusher, drop shot someone camped deep, otherwise mostly topspin with some flat and slice.
+  const oppZ = Math.min(...opp.map((o) => Math.abs(o.pos.z)));
+  const r = Math.random();
+  const kind = !p.plan.volley && oppZ < 5 && r < 0.3 ? 'lob'
+    : !p.plan.volley && oppZ > 11.5 && r < 0.12 ? 'drop'
+    : r < 0.5 ? 'top' : r < 0.75 ? 'flat' : 'slice';
   hitBall(p, {
-    power: rnd(...L.power), aim, spin: Math.random() < 0.5 ? rnd(0.2, 0.7) : (Math.random() < 0.3 ? -0.5 : 0),
-    lob, quality: clamp(1 - L.err * tired * rnd(0, 0.35), 0.2, 1),
+    power: rnd(...L.power), aim, spin: kind === 'top' ? rnd(0.5, 0.9) : 0, kind,
+    lob: kind === 'lob', drop: kind === 'drop', quality: clamp(1 - L.err * tired * rnd(0, 0.35), 0.2, 1),
   });
 }
 
@@ -564,7 +592,7 @@ function racketHit(p) {
     power = clamp(shot.speed / shot.model.peak * 0.85, 0.1, 1);
     spin = type === 'top' ? clamp(0.55 + power * 0.3, 0.4, 1) : type === 'slice' || type === 'drop' ? -0.6 : 0;
   }
-  hitBall(p, { power, aim: clamp(tim * pullDir * 0.9, -1, 1), spin, quality, lob: type === 'lob', drop: type === 'drop' });
+  hitBall(p, { power, aim: clamp(tim * pullDir * 0.9, -1, 1), spin, quality, lob: type === 'lob', drop: type === 'drop', kind: type });
   if (!G.demo && shot) popupAt(SHOT_LABEL[type], ball.pos, type === 'flat' ? 0xffffff : 0xffd166, 'big');
   if (!G.demo && Math.abs(dt - 0.03) < 0.05) setTimeout(() => popupAt('PERFECT', ball.pos, TEAM_COLORS[p.team], 'big'), 250);
   strokeAtContact(p, pl);
@@ -1071,7 +1099,9 @@ function frame(now) {
   update(sdt);
   players.forEach((p) => { if (active(p)) animatePlayer(p, sdt); });
   ballMesh.position.copy(ball.pos);
-  ballMesh.rotation.x += sdt * 12; ballMesh.rotation.y += sdt * 7;
+  // Visible spin: topspin rolls forward fast, slice and drop shots spin backward.
+  const ks = KINDS[ball.kind]?.ballSpin ?? 12;
+  ballMesh.rotation.x += sdt * ks * (ball.vel.z > 0 ? 1 : -1); ballMesh.rotation.y += sdt * 4;
   ballLight.position.copy(ball.pos);
   if (ball.live) trail.push(ball.pos, ball.vel.length() / 4); else trail.clear();
   trail.update();
@@ -1120,4 +1150,4 @@ function buildTunePanel() {
 buildTunePanel();
 $('tuneBtn').addEventListener('click', () => $('tunePanel').classList.toggle('hide'));
 
-window.__tennis = { G, ball, players, startMatch, toLobby, onSwing, settings, debug, predict, TUNE };
+window.__tennis = { G, ball, players, hitBall, startMatch, toLobby, onSwing, settings, debug, predict, TUNE };
