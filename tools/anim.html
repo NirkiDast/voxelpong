@@ -1,0 +1,44 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Stroke preview</title>
+<style>body{margin:0;background:#111;color:#ddd;font:12px monospace}canvas{display:block}</style>
+<script type="importmap">{ "imports": { "three": "../vendor/three/build/three.module.js", "three/addons/": "../vendor/three/addons/" } }</script>
+</head><body>
+<script type="module">
+// Contact sheet of a stroke clip: frames across, front and side views. ?clip=forehand&n=7
+import * as THREE from 'three';
+import { createSmolPlayer } from '../js/tennis/smolchar.js';
+import { CLIPS, sample } from '../js/tennis/smol.js';
+import '../js/tennis/strokes.js';
+const q = new URLSearchParams(location.search);
+const names = (q.get('clip') || 'forehand').split(',');
+const n = Number(q.get('n') || 7);
+const W = 150, H = 190;
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W * n, H * 2 * names.length);
+renderer.setScissorTest(true);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2.2));
+const dl = new THREE.DirectionalLight(0xffffff, 1.5); dl.position.set(2, 4, 3); scene.add(dl);
+const grid = new THREE.GridHelper(4, 8, 0x555555, 0x333333); scene.add(grid);
+const ch = createSmolPlayer(0, 0x00ffff);
+scene.add(ch.group);
+const cam = new THREE.PerspectiveCamera(35, W / H, 0.1, 50);
+const views = [[0, 1.3, 4.6], [4.6, 1.3, 0]];   // front (camera in front of player), side
+names.forEach((name, row) => {
+  const c = CLIPS[name];
+  if (!c) { document.body.append(`missing ${name} `); return; }
+  for (let i = 0; i < n; i++) {
+    const t = (c.duration * i) / (n - 1);
+    ch.play(name, t - 0.06); ch.update(0.06, 0);   // lands exactly on t, fully faded in
+    views.forEach((v, k) => {
+      cam.position.set(...v); cam.lookAt(0, 1.0, 0);
+      const y = (row * 2 + (1 - k)) * H;     // webgl y from bottom
+      const yy = H * 2 * names.length - (row * 2 + k + 1) * H;
+      renderer.setViewport(i * W, yy, W, H); renderer.setScissor(i * W, yy, W, H);
+      renderer.setClearColor(Math.abs(t - (c.contact ?? -9)) < c.duration / (n - 1) / 2 ? 0x332222 : 0x1a1a22);
+      renderer.render(scene, cam);
+    });
+  }
+});
+window.done = true;
+</script></body></html>

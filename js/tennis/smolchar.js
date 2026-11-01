@@ -2,6 +2,7 @@
 // for the neon doubles game: a looping base (ready / run / serve wait) with one-shot strokes on top,
 // plus a glowing team-coloured ring on the racket so it reads in the dark arena.
 import * as THREE from 'three';
+import './strokes.js';   // adds the shot-specific stroke clips to CLIPS
 import { buildRig, BONES, LIFT_SCALE, RACKET_HEAD, CLIPS, sample, restPose, copyPose, lerpPose, LOOKS, STARTER_GEAR, expressionFor, PAL } from './smol.js';
 
 // Two players per team, each from the Smol roster, recoloured into the team's neon kit.

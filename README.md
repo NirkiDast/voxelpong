@@ -52,7 +52,7 @@ Optional: `?signal=host:port` points both pages at a self-hosted PeerJS server i
 - Optional "Webcam tracking" toggle in the lobby. MediaPipe Pose Landmarker (vendored in `vendor/mediapipe/`, Apache-2.0) runs locally on the PC and tracks each player's playing wrist and body position; the paddle follows it while the phone supplies angle and swing. Recenter on the phone re-homes the camera. Two players are told apart by which side of the room they stand on.
 
 **Voxel Tennis (`tennis.html`)**
-- Second game on the same site: neon indoor wooden court, chibi voxel players with glowing rackets, 1v1 singles by default, 2v2 doubles selectable, tennis scoring.
+- Second game on the same site: neon indoor wooden court, chibi voxel players with glowing rackets, 1v1 vs CPU by default, 1v1 vs a friend (second phone) or 2v2 doubles selectable, tennis scoring.
 - Players run to the ball by themselves. Swing timing aims (early = cross-court, late = down the line), swing speed sets pace, swinging up/down adds topspin/slice, face tilted up lobs. Serve = flick the phone up to toss, then swing.
 - Phase 2 (done): on the phone tap "Calibrate tennis shots" and record 12 shots 3 times each (flat/topspin/slice forehand and backhand, lob, drop shot, toss, flat, spin and kick serves). The game matches each live swing to the nearest calibrated shot (`js/shotfeat.js`) and plays it.
 
@@ -61,3 +61,5 @@ Optional: `?signal=host:port` points both pages at a self-hosted PeerJS server i
 - Proper serve rules, AI personalities, match stats and replays of great rallies
 - Music, more arenas, voxel avatars, an effects-intensity setting
 - 2P co-op vs AI, plus a self-hosted signaling or TURN fallback for strict networks
+
+Stroke animations: `js/tennis/strokes.js` builds shot-specific, exaggerated clips (flat/topspin/slice forehand and backhand, drop shots, flat/kick/slice serves) from the Smol Tennis strokes. Preview them with `tools/anim.html?clip=fhTop,bhSlice&n=8`.

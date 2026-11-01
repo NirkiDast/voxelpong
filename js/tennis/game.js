@@ -56,7 +56,9 @@ const AI_LEVELS = {
   hard:   { speed: 8.6, err: 0.55, miss: 0.025, power: [0.5, 0.9], fault: 0.08 },
 };
 const settings = { level: 'medium', games: 3, format: '1v1' };
-const singles = () => settings.format === '1v1';
+// '1v1' = you vs CPU, 'pvp' = you vs a friend's phone (no CPU), '2v2' = doubles.
+const singles = () => settings.format !== '2v2';
+const pvp = () => settings.format === 'pvp';
 const active = (p) => !singles() || p.i === 0 || p.i === 2;
 const courtHW = () => (singles() ? C.SHW : C.HW);   // in-play half width
 
@@ -247,7 +249,7 @@ function pointText() {
   }
   return [PT_NAMES[Math.min(a, 3)], PT_NAMES[Math.min(b, 3)]];
 }
-const teamName = (t) => (singles() ? (t === 0 ? 'YOU' : 'CPU') : t === 0 ? (players[1].kind === 'human' ? 'P1 & P2' : 'YOU & CPU') : 'CPU & CPU');
+const teamName = (t) => (pvp() ? (t === 0 ? 'P1' : players[2].kind === 'human' ? 'P2' : 'CPU') : singles() ? (t === 0 ? 'YOU' : 'CPU') : t === 0 ? (players[1].kind === 'human' ? 'P1 & P2' : 'YOU & CPU') : 'CPU & CPU');
 function renderScore() {
   const [a, b] = pointText();
   $('sName0').textContent = teamName(0);
@@ -335,7 +337,7 @@ function setupServe() {
   sendState();
   if (!G.demo) {
     const me = s.kind === 'human';
-    const who = me ? (!singles() && players[1].kind === 'human' ? `P${s.i + 1} serve` : 'Your serve') : null;
+    const who = me ? (pvp() && players[2].kind === 'human' ? `P${s.slot} serve` : !singles() && players[1].kind === 'human' ? `P${s.i + 1} serve` : 'Your serve') : null;
     const how = s.control === 'racket' ? 'flick the phone up to toss, then swing' : 'click / swing to toss, again to hit';
     setHint(me ? `${who}${G.second ? ' (second serve)' : ''}: ${how}` : (G.second ? 'Second serve' : ''));
   }
@@ -390,7 +392,8 @@ function hitServe(s, power, { spin = 0, aim = 0, kind = null, contactY = ball.po
   ball.live = true; ball.serve = true; ball.netTouch = false; ball.bounces = 0;
   ball.lastTeam = s.team; ball.lastHitter = s.i;
   s.ch.setBase('ready');
-  s.ch.play('serve', s.ch.contactOf('serve'));
+  const clip = kind === 'kick' ? 'srvKick' : kind === 'spin' ? 'srvSlice' : 'srvFlat';
+  s.ch.play(clip, s.ch.contactOf(clip));
   G.phase = 'rally';
   G.shots = 0;
   setHint('');
@@ -506,28 +509,39 @@ function aiHit(p) {
   const opp = players.filter((o) => o.team !== p.team && active(o));
   const gapX = -Math.sign(opp.reduce((a, o) => a + o.pos.x, 0) || rnd(-1, 1));
   const aim = clamp(gapX * rnd(0.3, 0.9) + rnd(-0.3, 0.3), -0.95, 0.95);
-  // Shot choice: lob a net rusher, drop shot someone camped deep, otherwise mostly topspin with some flat and slice.
-  const oppZ = Math.min(...opp.map((o) => Math.abs(o.pos.z)));
-  const r = Math.random();
-  const kind = !p.plan.volley && oppZ < 5 && r < 0.3 ? 'lob'
-    : !p.plan.volley && oppZ > 11.5 && r < 0.12 ? 'drop'
-    : r < 0.5 ? 'top' : r < 0.75 ? 'flat' : 'slice';
+  const kind = p.plan.kind || aiPickKind(p);
   hitBall(p, {
     power: rnd(...L.power), aim, spin: kind === 'top' ? rnd(0.5, 0.9) : 0, kind,
     lob: kind === 'lob', drop: kind === 'drop', quality: clamp(1 - L.err * tired * rnd(0, 0.35), 0.2, 1),
   });
 }
 
-// Which stroke animation fits a planned contact.
-function strokeOf(p, plan) {
+// CPU shot choice: lob a net rusher, drop shot someone camped deep, otherwise mostly topspin with some flat and slice.
+function aiPickKind(p) {
+  const opp = players.filter((o) => o.team !== p.team && active(o));
+  const oppZ = Math.min(...opp.map((o) => Math.abs(o.pos.z)));
+  const r = Math.random();
+  return !p.plan.volley && oppZ < 5 && r < 0.3 ? 'lob'
+    : !p.plan.volley && oppZ > 11.5 && r < 0.12 ? 'drop'
+    : r < 0.5 ? 'top' : r < 0.75 ? 'flat' : 'slice';
+}
+// Which stroke animation fits a planned contact and shot type.
+const STROKE_BY_TYPE = {
+  flat: ['fhFlat', 'bhFlat'], top: ['fhTop', 'bhTop'], lob: ['fhTop', 'bhTop'],
+  slice: ['fhSlice', 'bhSlice'], drop: ['dropFh', 'dropBh'],
+};
+function strokeOf(p, plan, type = null) {
   if (plan && plan.contact.y > 2.1) return 'smash';
   const fore = plan ? plan.fore : true;
   if (plan && plan.volley) return fore ? 'volleyFh' : 'volleyBh';
+  const set = STROKE_BY_TYPE[type];
+  if (set) return set[fore ? 0 : 1];
   return fore ? 'forehand' : 'backhand';
 }
+const typeOfSpin = (spin, lob) => (lob ? 'lob' : spin > 0.2 ? 'top' : spin < -0.2 ? 'slice' : 'flat');
 // Snap into the stroke at its contact frame, so the racket meets the ball on the hit.
-function strokeAtContact(p, plan) {
-  const name = strokeOf(p, plan);
+function strokeAtContact(p, plan, type = null) {
+  const name = strokeOf(p, plan, type);
   p.ch.play(name, p.ch.contactOf(name));
 }
 
@@ -595,7 +609,7 @@ function racketHit(p) {
   hitBall(p, { power, aim: clamp(tim * pullDir * 0.9, -1, 1), spin, quality, lob: type === 'lob', drop: type === 'drop', kind: type });
   if (!G.demo && shot) popupAt(SHOT_LABEL[type], ball.pos, type === 'flat' ? 0xffffff : 0xffd166, 'big');
   if (!G.demo && Math.abs(dt - 0.03) < 0.05) setTimeout(() => popupAt('PERFECT', ball.pos, TEAM_COLORS[p.team], 'big'), 250);
-  strokeAtContact(p, pl);
+  strokeAtContact(p, pl, type || typeOfSpin(spin, false));
 }
 
 // ---------- Phase 2: calibrated shot recognition ----------
@@ -644,7 +658,7 @@ function tryHumanHit(p) {
   const quality = clamp(1 - Math.abs(dt - SWEET) / 0.45, 0.35, 1);
   const call = Math.abs(dt - SWEET) < 0.05 ? 'PERFECT' : null;
   hitBall(p, { power: sw.power, aim: aimWorld, spin: sw.spin, lob: sw.lob, quality });
-  strokeAtContact(p, pl);
+  strokeAtContact(p, pl, typeOfSpin(sw.spin, sw.lob));
   if (call && !G.demo) popupAt(call, ball.pos, TEAM_COLORS[p.team], 'big');
   p.swing = null;
   return true;
@@ -773,7 +787,8 @@ function updatePlayer(p, dt) {
   }
   // The CPU starts its stroke so the clip's contact frame lands on the hit.
   if (p.kind === 'ai' && p.plan && !p.plan.done && !p.plan.anim) {
-    const name = strokeOf(p, p.plan);
+    if (!p.plan.kind) p.plan.kind = aiPickKind(p);
+    const name = strokeOf(p, p.plan, p.plan.kind);
     if (p.plan.t - G.time <= p.ch.contactOf(name)) { p.plan.anim = true; p.ch.play(name, 0); }
   }
 }
@@ -936,7 +951,8 @@ const host = new Host({
     else { el.textContent = 'Connecting to pairing server…'; el.className = 'pill'; }
   },
   onJoin(slot, rejoin) {
-    const p = players[slot - 1];
+    phoneOn[slot] = true;
+    const p = slotPlayer(slot);
     if (!p) return;
     p.phone = true;
     $(`p${slot}State`).textContent = 'Phone connected';
@@ -946,7 +962,8 @@ const host = new Host({
     sendState();
   },
   onLeave(slot) {
-    const p = players[slot - 1];
+    phoneOn[slot] = false;
+    const p = slotPlayer(slot);
     if (!p) return;
     p.phone = false;
     $(`p${slot}State`).textContent = 'Waiting for phone…';
@@ -954,7 +971,7 @@ const host = new Host({
     pingMs[slot - 1] = 0;
   },
   onData(slot, m) {
-    const p = players[slot - 1];
+    const p = slotPlayer(slot);
     if (!p || !m) return;
     if (m.t === 'r' && Array.isArray(m.h) && Array.isArray(m.n) && Array.isArray(m.v)) {
       p.control = 'racket';
@@ -991,11 +1008,25 @@ const host = new Host({
   },
 });
 setInterval(() => { players.forEach((p) => { if (p.phone) host.sendFast(p.slot, { t: 'ping', ts: performance.now() }); }); }, 1000);
+// Phone slot 2 is the partner in doubles, or the opponent (far side) in 1v1 vs a friend.
+const phoneOn = { 1: false, 2: false };
+const P2_FIELDS = ['profile', 'shots', 'hand', 'control', 'racket', 'hist', 'lastSwingId'];
+function slotPlayer(slot) { return slot === 2 && pvp() ? players[2] : players[slot - 1]; }
+function applyFormat() {
+  const [mate, opp] = [players[1], players[2]];
+  const to = pvp() ? opp : mate, from = pvp() ? mate : opp;
+  if (from.slot === 2) for (const f of P2_FIELDS) { const v = from[f]; from[f] = to[f]; to[f] = v; }
+  from.slot = 0; from.phone = false;
+  to.slot = 2; to.phone = phoneOn[2];
+  $('p2Card').classList.toggle('soon', settings.format === '1v1');
+  $('p2Title').textContent = pvp() ? 'OPPONENT (1v1)' : 'PARTNER (2v2)';
+  if (!phoneOn[2]) $('p2State').textContent = pvp() ? 'Scan to play against P1' : 'Optional: scan to team up';
+}
 function haptic(p, kind, power = 0.5) { if (p.phone && p.kind === 'human') host.send(p.slot, { t: 'hap', k: kind, p: power }); }
 function sendState() {
-  players.slice(0, 2).forEach((p) => {
-    if (!p.phone) return;
-    host.send(p.slot, { t: 'st', mode: G.phase === 'over' ? 'over' : 'rally', demo: G.demo, you: G.games[0], them: G.games[1],
+  players.forEach((p) => {
+    if (!p.phone || !p.slot) return;
+    host.send(p.slot, { t: 'st', mode: G.phase === 'over' ? 'over' : 'rally', demo: G.demo, you: G.games[p.team], them: G.games[1 - p.team],
       serve: (G.phase === 'serve' || G.phase === 'toss') && G.server === p.i && !G.demo });
   });
 }
@@ -1030,6 +1061,8 @@ function startMatch() {
   G.demo = false;
   players[0].kind = 'human';
   players[1].kind = !singles() && players[1].phone ? 'human' : 'ai';
+  players[2].kind = pvp() && players[2].phone ? 'human' : 'ai';
+  players[2].control = players[2].phone ? players[2].control : 'touch';
   players[0].control = players[0].phone ? players[0].control : 'touch';
   G.pts = [0, 0]; G.games = [0, 0]; G.gameIdx = 0;
   $('lobby').classList.add('hide');
@@ -1052,7 +1085,8 @@ function gameOver(team) {
   G.phase = 'over';
   G.timer = 0;
   const win = team === 0;
-  $('banner').textContent = win ? (!singles() && players[1].kind === 'human' ? 'YOU BOTH WIN!' : 'YOU WIN!') : 'CPU WINS';
+  const p2human = pvp() && players[2].kind === 'human';
+  $('banner').textContent = p2human ? (win ? 'P1 WINS!' : 'P2 WINS!') : win ? (!singles() && players[1].kind === 'human' ? 'YOU BOTH WIN!' : 'YOU WIN!') : 'CPU WINS';
   $('banner').style.color = win ? 'var(--p1)' : 'var(--p2)';
   $('overPanel').classList.remove('hide');
   if (win) sfx.win();
@@ -1070,7 +1104,7 @@ document.querySelectorAll('[data-level]').forEach((b) => b.addEventListener('cli
 document.querySelectorAll('[data-format]').forEach((b) => b.addEventListener('click', () => {
   settings.format = b.dataset.format;
   document.querySelectorAll('[data-format]').forEach((x) => x.classList.toggle('on', x === b));
-  $('p2Card').classList.toggle('soon', singles());
+  applyFormat();
   sfx.blip();
   if (G.demo) { G.pts = [0, 0]; G.gameIdx = 0; startPoint(); }
 }));
