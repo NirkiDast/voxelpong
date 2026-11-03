@@ -87,6 +87,8 @@
   .popup.small { font-size: 10px; }
   #tuneBtn { cursor: pointer; padding: 6px 10px; }
   #tunePanel { position: fixed; top: 52px; right: 12px; z-index: 20; width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 70px); overflow-y: auto; background: rgba(10,7,30,0.92); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-size: 12px; }
+  #swingDbg { position: fixed; left: 12px; bottom: 12px; z-index: 19; width: min(360px, 45vw); background: rgba(10,7,30,0.85); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font: 12px/1.45 monospace; color: #e8e6ff; pointer-events: none; }
+  #swingDbg hr { border: 0; border-top: 1px solid rgba(255,255,255,0.12); margin: 5px 0; }
   #tunePanel label { display: grid; grid-template-columns: 1fr 110px 58px; gap: 8px; align-items: center; margin: 6px 0; }
   #tunePanel input[type=number] { width: 58px; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
   .tuneHead { font-size: 11px; color: var(--p1); margin-bottom: 6px; }
@@ -167,6 +169,7 @@
 
 <div class="topbar"><button id="tuneBtn" class="pill" title="Tuning">⚙</button><span id="fps" class="pill"></span><span id="ping" class="pill">No phone</span><span id="netStatus" class="pill">Starting…</span></div>
 <div id="tunePanel" class="hide"></div>
+<div id="swingDbg" class="hide"></div>
 <div id="soundHint" class="pill">Click anywhere to enable sound</div>
 
 <script type="module" src="js/tennis/game.js"></script>

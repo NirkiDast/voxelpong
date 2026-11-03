@@ -52,6 +52,7 @@
   #hapticSwitch { position: absolute; opacity: 0; pointer-events: none; left: -100px; }
 </style>
 <script src="vendor/peerjs.min.js"></script>
+<style>#calNote{margin:10px 16px;font-size:14px;line-height:1.4;color:#ffd166;text-align:center}</style>
 </head>
 <body>
 <div class="status"><span><span class="dot" id="dot"></span><span id="conn">Connecting…</span></span><span id="lat"></span></div>
@@ -100,6 +101,7 @@
   </div>
   <div class="row"><button id="arBtn" class="hide" style="background: linear-gradient(90deg, var(--p1), var(--p2)); color: #0b0620; font-weight: 800;">Full motion (AR)</button></div>
   <div id="arNote"></div>
+  <div id="calNote"></div>
 </div>
 
 <div id="hitFlash"></div>

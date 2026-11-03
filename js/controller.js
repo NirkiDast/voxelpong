@@ -1,6 +1,6 @@
 // Phone controller: reads tilt + swing from motion sensors (or touch) and streams them to the PC.
 import { Controller } from './net.js';
-import { shotFeatures, shotModel, TENNIS_SHOTS } from './shotfeat.js';
+import { shotFeatures, shotModel, modelOk, confusions, TENNIS_SHOTS } from './shotfeat.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -272,6 +272,7 @@ function onPose() {
   // In AR mode the arm's real velocity comes from tracked position instead of the accelerometer.
   const v = add(cross(w, scale(head, RACKET_LEN)), xr.p ? xr.vel : scale(vLin, 0.8));
   if (recording) recording.samples.push({ t: now, v, w, h: head, n: face });
+  else if (!xr.p) trackDrift(now, v);
 
   state.x = clamp(head[0] / 0.7, -1.5, 1.5);
   state.y = clamp(-face[1] / 0.7, -1.5, 1.5);
@@ -291,6 +292,30 @@ function onPose() {
     swingLock = now + 400;
     sendSwing(clamp((fwd - thr) / (full - thr), 0, 1) * 0.7 + 0.3, clamp(v[0] / 3, -1, 1));
   }
+}
+
+// Phone orientation drifts slowly around the vertical axis, and a hard swing can knock it a
+// long way at once. Each real swing goes roughly toward the TV at its fastest point, so after
+// every swing "forward" is nudged a little toward where that swing actually went. Forehands
+// (pulling one way) and backhands (the other) balance out over a rally.
+const drift = { buf: [], peak: 0, peakT: 0 };
+function trackDrift(now, v) {
+  const m = Math.hypot(v[0], v[1], v[2]);
+  drift.buf.push({ t: now, v, m });
+  while (drift.buf.length && now - drift.buf[0].t > 500) drift.buf.shift();
+  const minSwing = profile ? Math.max(2, profile.full * 0.45) : 2.5;
+  if (m > minSwing && m > drift.peak) { drift.peak = m; drift.peakT = now; }
+  if (!drift.peak || m > drift.peak * 0.4 || now - drift.peakT < 60) return;
+  // The swing is over: average its horizontal direction through the fast part.
+  let x = 0, z = 0;
+  for (const s of drift.buf) if (s.m >= drift.peak * 0.6) { x += s.v[0]; z += s.v[2]; }
+  drift.peak = 0;
+  if (!frame || Math.hypot(x, z) < 1e-3) return;
+  const a = Math.atan2(x, -z);                 // 0 = straight at the TV, + = to the right
+  if (Math.abs(a) > 1.2) return;               // a sideways flail, not a shot
+  const g = a * 0.12, c = Math.cos(g), sn = Math.sin(g);
+  const F = norm(add(scale(frame.F, c), scale(frame.R, sn)));
+  frame = { F, U: frame.U, R: cross(F, frame.U) };
 }
 
 // ---------- Full motion: AR position tracking (WebXR + ARCore, Android Chrome) ----------
@@ -392,6 +417,9 @@ let game = params.get('g') === 'tennis' ? 'tennis' : 'pingpong';
 // Tennis shot calibration (phase 2): three recordings of each shot become a model per shot.
 let shots = null;
 try { shots = JSON.parse(localStorage.getItem('vxpp-tennis-shots') || 'null'); } catch { /* private mode */ }
+// Calibrations from an older version of the shot reader can't be used: start fresh.
+let oldShots = false;
+if (shots && !Object.values(shots).some(modelOk)) { shots = null; oldShots = true; }
 let calMode = 'swing';
 const tcal = { i: 0, feats: {} };
 function startTennisCal() {
@@ -412,6 +440,7 @@ function renderTennisCal(msg = '') {
   const got = (tcal.feats[st.key] || []).length;
   $('calStep').textContent = `SHOT ${tcal.i + 1} OF ${TENNIS_SHOTS.length}`;
   const fresh = tcal.i === 0 && !Object.keys(tcal.feats).length && shots && Object.keys(shots).length;
+  if (tcal.i === 0 && oldShots && !msg) msg = 'The shot reader was upgraded, so your old calibration needs redoing. Sorry!';
   $('calSkip').textContent = fresh ? 'Use my last calibration' : 'Skip this shot';
   $('calTitle').textContent = st.title;
   $('calText').textContent = `${st.text} Press and hold the circle as you start the motion, let go when it ends. 3 times.`;
@@ -441,6 +470,13 @@ function nextTennisShot(msg) {
   shots = models;
   try { localStorage.setItem('vxpp-tennis-shots', JSON.stringify(shots)); } catch { /* private mode */ }
   link?.send({ t: 'shots', models: shots });
+  oldShots = false;
+  // Check whether any two shots came out too alike to tell apart.
+  const title = (k) => TENNIS_SHOTS.find((x) => x.key === k)?.title.toLowerCase() || k;
+  const mix = confusions(tcal.feats).filter((m) => m.a !== 'toss' && m.b !== 'toss');
+  $('calNote').textContent = mix.length
+    ? `Heads up: your ${title(mix[0].a)} and ${title(mix[0].b)} looked alike${mix[1] ? `, and so did ${title(mix[1].a)} and ${title(mix[1].b)}` : ''}. Make them more different (racket path, face angle) and recalibrate for better reading.`
+    : (Object.keys(tcal.feats).length ? 'All your shots look clearly different. Nice.' : '');
   calMode = 'swing';
   $('calRedo').textContent = 'Start over';
   buzz('win');

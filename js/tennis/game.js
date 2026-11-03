@@ -13,7 +13,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { C, TEAM_COLORS, buildArena, buildTennisBall } from './court.js';
 import { createSmolPlayer } from './smolchar.js';
-import { shotFeatures, classify } from '../shotfeat.js';
+import { shotFeatures, classify, modelOk } from '../shotfeat.js';
 import { Particles, Rings, Trail, Shake } from '../fx.js';
 import { Host } from '../net.js';
 import { sfx, unlockAudio } from '../audio.js';
@@ -30,7 +30,7 @@ const sideOf = (team) => (team === 0 ? 1 : -1);   // team 0 plays at z > 0
 const TUNE_DEFAULTS = {
   camHeight: 8.2, camBack: 12.5, camLookY: 0.4, camLookZ: -3.2, fov: 46, camFollow: 0.3, autoZoom: 1,
   gameSpeed: 1.0, gravity: 12.5, shotMin: 18, shotMax: 34, serveFast: 0.5, serveSlow: 0.9, servePerfect: 0.12, lobTime: 1.5,
-  bounce: 0.7, runSpeed: 8.5,
+  bounce: 0.7, runSpeed: 8.5, swingLag: 0.06, swingWindow: 0.32, swingDebug: 0,
 };
 const TUNE_INFO = {
   camHeight: [3, 16, 0.1, 'Camera height'], camBack: [6, 24, 0.1, 'Camera distance behind baseline'],
@@ -40,7 +40,9 @@ const TUNE_INFO = {
   gravity: [6, 20, 0.1, 'Gravity (less = floatier)'], shotMin: [8, 30, 0.5, 'Soft shot speed (m/s)'],
   shotMax: [15, 50, 0.5, 'Hard shot speed (m/s)'], serveFast: [0.3, 1, 0.01, 'Fast serve flight (s)'],
   serveSlow: [0.5, 1.6, 0.01, 'Soft serve flight (s)'],
-  servePerfect: [0.03, 0.5, 0.01, 'Perfect serve window (m from toss top)'], lobTime: [0.9, 2.5, 0.05, 'Lob flight (s)'],
+  servePerfect: [0.03, 0.5, 0.01, 'Perfect serve window (m from toss top)'],
+  swingLag: [0, 0.25, 0.01, 'TV lag compensation (s)'], swingWindow: [0.1, 0.6, 0.01, 'Late swing allowance (s)'],
+  swingDebug: [0, 1, 1, 'Swing debug overlay (0/1)'], lobTime: [0.9, 2.5, 0.05, 'Lob flight (s)'],
   bounce: [0.4, 0.9, 0.01, 'Bounce height'], runSpeed: [4, 12, 0.1, 'Your run speed'],
 };
 const TUNE = { ...TUNE_DEFAULTS };
@@ -570,37 +572,52 @@ function onSwing(i, power, extra = {}) {
   tryHumanHit(p);
 }
 
-// Phone racket mode: when the ball reaches you, look back over the last half second of racket motion
-// for the fastest forward swing. Its peak sets the timing (aim) and its speed sets the power.
-const RLATE = 0.2;
+// Phone racket mode: when the ball reaches you, look back over the recent racket motion for the
+// fastest swing. Its peak sets the timing (aim) and its speed sets the power. Speed is the racket
+// head's total speed, so it doesn't matter if the phone's idea of "forward" has drifted.
+const RLATE_MIN = 0.12;
+// The smallest swing that counts, from the player's calibration (a drop shot is the softest).
+function swingThreshold(p) {
+  const peaks = GROUND_SHOTS.filter((k) => modelOk(p.shots?.[k])).map((k) => p.shots[k].peak);
+  if (!peaks.length) return { thr: p.profile?.thr ?? 1.0, typical: p.profile?.full ?? 5.5 };
+  const sorted = [...peaks].sort((x, y) => x - y);
+  return { thr: Math.max(0.8, sorted[0] * 0.5), typical: sorted[Math.floor(sorted.length / 2)] };
+}
 function racketHit(p) {
   const pl = p.plan;
-  let thr = p.profile?.thr ?? 1.0;
-  const full = p.profile?.full ?? 5.5;
-  // A calibrated drop shot is a soft swing: make sure it still counts as a swing.
-  if (p.shots?.drop) thr = Math.min(thr, p.shots.drop.peak * 0.45);
+  const { thr, typical } = swingThreshold(p);
+  const full = typical * 1.1;
+  const lateBy = TUNE.swingLag + Math.max(RLATE_MIN, TUNE.swingWindow);
   let best = null;
-  for (const h of p.hist) if (h.gt >= pl.t - EARLY && (!best || h.fwd > best.fwd)) best = h;
-  const late = G.time > pl.t + RLATE;
-  if (!best || best.fwd <= thr) { if (late) pl.done = true; return; }
-  // Still speeding up? Give it a couple of frames to reach its peak.
+  for (const h of p.hist) if (h.gt >= pl.t - EARLY && (!best || h.spd > best.spd)) best = h;
+  const late = G.time > pl.t + lateBy;
+  if (!best || best.spd <= thr) {
+    if (late) { pl.done = true; logSwing(p, { result: 'miss', why: best ? 'too soft' : 'no swing', spd: best?.spd || 0, thr }); }
+    return;
+  }
+  // Still speeding up? Wait for the peak.
   const lastH = p.hist[p.hist.length - 1];
-  if (best === lastH && !late && G.time < pl.t + 0.08) return;
+  if (best === lastH && !late) return;
+  if (lastH !== best && lastH.spd > best.spd * 0.75 && !late && G.time - best.gt < 0.06) return;
+  // Only a small move so far (getting ready, adjusting the grip)? Unless it was a drop shot, the
+  // real swing is probably still coming, so hold on until the late limit.
+  let shot = recogniseShot(p, best, GROUND_SHOTS);
+  if (best.spd < typical * 0.55 && !late && !(shot && SHOT_TYPE[shot.name] === 'drop')) return;
   const d = Math.hypot(p.pos.x - pl.stand.x, p.pos.z - pl.stand.z);
-  if (d > REACH) { pl.done = true; return; }
-  const dt = pl.t - best.gt;                       // > 0: swing peaked before the ball arrived
-  const tim = clamp((dt - 0.03) / 0.16, -1, 1);
+  if (d > REACH) { pl.done = true; logSwing(p, { result: 'miss', why: 'out of reach', spd: best.spd, thr }); return; }
+  const dt = pl.t + TUNE.swingLag - best.gt;      // > 0: swing peaked before the (lag-corrected) contact
+  const tim = clamp((dt - 0.03) / 0.18, -1, 1);
   const handX = sideOf(p.team) * (p.hand === 'left' ? -1 : 1);
   const pullDir = pl.fore ? -handX : handX;
   let up = 0, n = 0;
   for (const h of p.hist) if (Math.abs(h.t - best.t) < 90) { up += h.up; n++; }
   up = n ? up / n : 0;
   let spin = up > 0.8 ? clamp(up / 2.5, 0.25, 1) : up < -0.8 ? -0.6 : 0;
-  let power = clamp((best.fwd - thr) / (full - thr), 0.1, 1);
-  const quality = clamp(1 - Math.abs(dt - 0.03) / 0.4, 0.4, 1);
+  let power = clamp((best.spd - thr) / (full - thr), 0.1, 1);
+  const quality = clamp(1 - Math.abs(dt - 0.03) / 0.45, 0.4, 1);
   // Phase 2: recognise which calibrated shot this swing was.
   let type = null;
-  const shot = recogniseShot(p, best, GROUND_SHOTS);
+  logSwing(p, { result: 'hit', spd: best.spd, thr, dt, shot });
   if (shot) {
     type = SHOT_TYPE[shot.name];
     power = clamp(shot.speed / shot.model.peak * 0.85, 0.1, 1);
@@ -608,9 +625,60 @@ function racketHit(p) {
   }
   hitBall(p, { power, aim: clamp(tim * pullDir * 0.9, -1, 1), spin, quality, lob: type === 'lob', drop: type === 'drop', kind: type });
   if (!G.demo && shot) popupAt(SHOT_LABEL[type], ball.pos, type === 'flat' ? 0xffffff : 0xffd166, 'big');
-  if (!G.demo && Math.abs(dt - 0.03) < 0.05) setTimeout(() => popupAt('PERFECT', ball.pos, TEAM_COLORS[p.team], 'big'), 250);
+  if (!G.demo && Math.abs(dt - 0.03) < 0.06) setTimeout(() => popupAt('PERFECT', ball.pos, TEAM_COLORS[p.team], 'big'), 250);
   strokeAtContact(p, pl, type || typeOfSpin(spin, false));
 }
+
+// ---------- Swing debugging ----------
+// Every swing decision is kept (last 300), with the raw motion around it, so a session can be
+// downloaded from the ⚙ panel and tuned against real swings.
+const swingLog = [];
+const SHOT_NAME = { fhFlat: 'flat FH', fhTop: 'topspin FH', fhSlice: 'slice FH', bhFlat: 'flat BH', bhTop: 'topspin BH', bhSlice: 'slice BH', slice: 'slice', lob: 'lob', drop: 'drop', srvFlat: 'flat serve', srvSpin: 'spin serve', srvKick: 'kick serve' };
+function logSwing(p, info) {
+  const pl = p.plan;
+  const e = {
+    at: +G.time.toFixed(3), player: p.slot, result: info.result, why: info.why || null,
+    spd: +(info.spd || 0).toFixed(2), thr: +(info.thr || 0).toFixed(2),
+    timing: info.dt != null ? Math.round(info.dt * 1000) : null, fore: pl ? pl.fore : null,
+    shot: info.shot?.name || null, dist: info.shot ? +info.shot.dist.toFixed(2) : null,
+    second: info.shot?.second || null, secondDist: info.shot?.secondDist != null ? +info.shot.secondDist.toFixed(2) : null,
+    vec: info.shot?.vec?.map((x) => +x.toFixed(3)) || null, contactY: info.contactY != null ? +info.contactY.toFixed(2) : null,
+    samples: p.hist.slice(-40).map((h) => ({ gt: +h.gt.toFixed(3), v: h.v, w: h.w, h: h.h, n: h.n })),
+  };
+  swingLog.push(e);
+  if (swingLog.length > 300) swingLog.shift();
+  if (TUNE.swingDebug) showSwingDebug(e);
+}
+function showSwingDebug(e) {
+  const el = $('swingDbg');
+  if (!el) return;
+  const what = e.result === 'miss' ? `<b style="color:#ff6b8b">MISS</b> (${e.why})`
+    : `<b style="color:#8dffb0">${e.result.toUpperCase()}</b> ${e.shot ? `${SHOT_NAME[e.shot] || e.shot} <span style="opacity:.6">d ${e.dist}${e.second ? ` · next ${SHOT_NAME[e.second] || e.second} ${e.secondDist}` : ''}</span>` : '(no calibrated match)'}`;
+  const timing = e.timing == null ? '' : ` · ${e.timing > 0 ? `${e.timing}ms early` : `${-e.timing}ms late`}`;
+  el.innerHTML = `<div>P${e.player} ${what}</div><div style="opacity:.75">speed ${e.spd} m/s (needs ${e.thr})${timing}</div>` + el.innerHTML.split('<hr>').slice(0, 4).map((x) => `<hr>${x}`).join('');
+}
+function downloadSwingLog() {
+  const blob = new Blob([JSON.stringify({ when: new Date().toISOString(), tune: TUNE, shots: players.map((p) => p.shots || null), log: swingLog })], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `swing-log-${Date.now()}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+// A phone that stops streaming motion mid-match (screen locked, browser in the background).
+function checkMotion() {
+  if (G.demo) return;
+  const now = performance.now();
+  for (const p of players) {
+    if (p.kind !== 'human' || !p.phone || p.control !== 'racket' || !p.lastR) continue;
+    if (!p.motionLost && now - p.lastR > 1500) {
+      p.motionLost = true;
+      setHint(`P${p.slot}: no motion from your phone. Keep its screen on and the controller page open.`);
+      logSwing(p, { result: 'miss', why: 'phone stopped sending motion' });
+    }
+  }
+}
+setInterval(checkMotion, 500);
 
 // ---------- Phase 2: calibrated shot recognition ----------
 // 'slice' is the older single slice calibration, still used if that's all a phone has.
@@ -627,7 +695,7 @@ function recogniseShot(p, best, names) {
   if (!f) return null;
   const c = classify(f.vec, p.shots, names);
   if (!c) return null;
-  return { name: c.name, dist: c.dist, model: p.shots[c.name], speed: f.peak };
+  return { name: c.name, dist: c.dist, second: c.second, secondDist: c.secondDist, model: p.shots[c.name], speed: f.peak, vec: f.vec };
 }
 
 // Upward racket-head motion during the swing means topspin, downward means slice.
@@ -821,15 +889,15 @@ function animatePlayer(p, dt) {
 // before a real serve don't fire it early, and so the whole motion is there to recognise.
 function serveSwing(s) {
   let thr = s.profile?.thr ?? 1.0;
-  const full = s.profile?.full ?? 5.5;
-  const cal = SERVE_SHOTS.map((k) => s.shots?.[k]?.peak).filter(Boolean);
-  if (cal.length) thr = Math.max(thr, Math.min(...cal) * 0.55);  // a serve is a big swing: ignore small moves
+  let full = s.profile?.full ?? 5.5;
+  const cal = SERVE_SHOTS.filter((k) => modelOk(s.shots?.[k])).map((k) => s.shots[k].peak);
+  if (cal.length) { thr = Math.max(thr, Math.min(...cal) * 0.55); full = Math.max(...cal) * 1.05; }  // a serve is a big swing: ignore small moves
   const now = performance.now();
   let best = null;
-  for (const h of s.hist) if (h.gt > G.toss0 + 0.25 && now - h.t < 400 && (!best || h.fwd > best.fwd)) best = h;
-  if (!best || best.fwd <= thr) return false;
+  for (const h of s.hist) if (h.gt > G.toss0 + 0.25 && now - h.t < 400 && (!best || h.spd > best.spd)) best = h;
+  if (!best || best.spd <= thr) return false;
   const last = s.hist[s.hist.length - 1];
-  const done = now - best.t > 140 || (last !== best && last.fwd < best.fwd * 0.45);
+  const done = now - best.t > 140 || (last !== best && last.spd < best.spd * 0.45);
   if (!done && ball.pos.y > 0.9) return false;      // still swinging: let it finish
   // Judge the contact by where the ball was when the swing peaked, not now.
   let contactY = ball.pos.y;
@@ -837,12 +905,13 @@ function serveSwing(s) {
   if (contactY < 1.2) return false;   // swung before the toss really went up
   const perfect = Math.abs(contactY - (G.tossApex ?? 9)) < TUNE.servePerfect;
   const shot = recogniseShot(s, best, SERVE_SHOTS);
+  logSwing(s, { result: 'serve', spd: best.spd, thr, shot, contactY, perfect });
   if (shot) {
     const kind = SHOT_TYPE[shot.name];
     const spin = kind === 'kick' ? 1 : kind === 'spin' ? 0.3 : 0;
     hitServe(s, clamp(shot.speed / shot.model.peak * 0.9, 0.1, 1), { spin, kind, contactY, perfect });
     if (!G.demo) setTimeout(() => popupAt(SERVE_LABEL[kind], ball.pos, 0xffd166, 'big'), perfect ? 350 : 0);
-  } else hitServe(s, clamp((best.fwd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0, contactY, perfect });
+  } else hitServe(s, clamp((best.spd - thr) / (full - thr), 0.1, 1), { spin: best.up > 0.8 ? 0.8 : 0, contactY, perfect });
   return true;
 }
 
@@ -860,7 +929,7 @@ function update(dt) {
       const now = performance.now();
       // With a calibrated toss, the lift only needs to be about half as quick as yours was.
       const tossUp = s.shots?.toss ? clamp(s.shots.toss.peak * 0.5, 0.8, 2.5) : 2.0;
-      if (s.hist.some((h) => now - h.t < 120 && h.up > tossUp && h.up > Math.abs(h.fwd) * 1.3)) toss(s);
+      if (s.hist.some((h) => now - h.t < 120 && h.up > tossUp && h.up > Math.hypot(h.fwd, h.lat) * 1.3)) toss(s);
     }
   } else if (G.phase === 'toss') {
     // A human's toss hangs a little longer, so there's time for a full service motion.
@@ -977,7 +1046,9 @@ const host = new Host({
       p.control = 'racket';
       p.racket = { h: new THREE.Vector3(...m.h), n: new THREE.Vector3(...m.n), v: new THREE.Vector3(...m.v) };
       const now = performance.now();
-      p.hist.push({ t: now, gt: G.time, fwd: -m.v[2], lat: m.v[0], up: m.v[1], v: m.v, w: m.w || [0, 0, 0], h: m.h, n: m.n });
+      p.hist.push({ t: now, gt: G.time, fwd: -m.v[2], lat: m.v[0], up: m.v[1], spd: Math.hypot(m.v[0], m.v[1], m.v[2]), v: m.v, w: m.w || [0, 0, 0], h: m.h, n: m.n });
+      p.lastR = now;
+      if (p.motionLost) { p.motionLost = false; if (!G.demo) setHint(''); }
       while (p.hist.length && now - p.hist[0].t > 900) p.hist.shift();
     } else if (m.t === 'in') {
       p.control = 'tilt';
@@ -1166,11 +1237,12 @@ function buildTunePanel() {
     const [min, max, step, label] = TUNE_INFO[k];
     return `<label><span>${label}</span><input type="range" min="${min}" max="${max}" step="${step}" data-k="${k}" value="${TUNE[k]}"><input type="number" min="${min}" max="${max}" step="${step}" data-n="${k}" value="${TUNE[k]}"></label>`;
   }).join('');
-  panel.innerHTML = `<div class="tuneHead px">TUNING</div>${rows}<div class="tuneBtns"><button id="tuneCopy">Copy values</button><button id="tuneReset">Reset</button></div><div id="tuneMsg"></div>`;
+  panel.innerHTML = `<div class="tuneHead px">TUNING</div>${rows}<div class="tuneBtns"><button id="tuneCopy">Copy values</button><button id="tuneReset">Reset</button><button id="tuneLog">Download swing log</button></div><div id="tuneMsg"></div>`;
   const save = () => { try { localStorage.setItem('vxpp-tennis-tune', JSON.stringify(TUNE)); } catch { /* ignore */ } };
   panel.querySelectorAll('input').forEach((inp) => inp.addEventListener('input', () => {
     const k = inp.dataset.k || inp.dataset.n;
     TUNE[k] = +inp.value;
+    if (k === 'swingDebug') $('swingDbg').classList.toggle('hide', !TUNE.swingDebug);
     panel.querySelectorAll(`[data-k="${k}"],[data-n="${k}"]`).forEach((o) => { if (o !== inp) o.value = inp.value; });
     save();
   }));
@@ -1179,9 +1251,11 @@ function buildTunePanel() {
     try { await navigator.clipboard.writeText(txt); $('tuneMsg').textContent = 'Copied! Paste it to Claude.'; }
     catch { $('tuneMsg').textContent = txt; }
   });
+  $('tuneLog').addEventListener('click', () => { downloadSwingLog(); $('tuneMsg').textContent = `Saved ${swingLog.length} swings. Send the file to Claude.`; });
   $('tuneReset').addEventListener('click', () => { Object.assign(TUNE, TUNE_DEFAULTS); save(); buildTunePanel(); });
 }
 buildTunePanel();
+$('swingDbg').classList.toggle('hide', !TUNE.swingDebug);
 $('tuneBtn').addEventListener('click', () => $('tunePanel').classList.toggle('hide'));
 
-window.__tennis = { G, ball, players, hitBall, startMatch, toLobby, onSwing, settings, debug, predict, TUNE };
+window.__tennis = { G, ball, players, hitBall, swingLog, startMatch, toLobby, onSwing, settings, debug, predict, TUNE };
